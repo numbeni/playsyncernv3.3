@@ -8,10 +8,11 @@ export interface GameStats {
 }
 
 export const getGameStats = (game: Game): GameStats => {
-  const totalAccounts = game.accounts.length;
-  const activeAccounts = game.accounts.filter((account) => account.status === "active").length;
-  const totalSlots = game.accounts.reduce((count, account) => count + account.slots.length, 0);
-  const totalAssignments = game.accounts.reduce(
+  const accounts = game.accounts ?? [];
+  const totalAccounts = accounts.length;
+  const activeAccounts = accounts.filter((account) => account.status === "active").length;
+  const totalSlots = accounts.reduce((count, account) => count + account.slots.length, 0);
+  const totalAssignments = accounts.reduce(
     (count, account) =>
       count + account.slots.reduce((slotCount, slot) => slotCount + slot.customers.length, 0),
     0,

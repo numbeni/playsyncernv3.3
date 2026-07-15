@@ -16,7 +16,7 @@ interface Props {
 export function GameCard({ game, onEdit, onDisable, onDelete }: Props) {
   const stats = getGameStats(game);
   const isPs5Only = game.platform === "PS5_ONLY";
-  const isActive = game.status === "active";
+  const isActive = game.status === "ACTIVE";
 
   return (
     <div
@@ -28,7 +28,7 @@ export function GameCard({ game, onEdit, onDisable, onDelete }: Props) {
       {/* Cover image — clickable, navigates to game detail */}
       <Link to={`/games/${game.id}`} className="relative aspect-[16/10] overflow-hidden bg-muted block">
         <img
-          src={game.cover}
+          src={game.coverUrl}
           alt={game.title}
           loading="lazy"
           className={cn(

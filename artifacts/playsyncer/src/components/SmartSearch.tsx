@@ -4,18 +4,17 @@ import { useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import type { SearchHit } from "@/domain/search/types";
 import { runSmartSearch } from "@/domain/search/smartSearch";
-import { games as mockGames } from "@/mocks/playSyncerMockData";
 import type { Game } from "@/domain/games/types";
 
 interface Props {
   /** Callback to filter game cards by a simple query (game title). */
   onGameFilter?: (query: string) => void;
-  /** Live games list. Defaults to mock data when omitted. */
+  /** Live games list. */
   games?: Game[];
   className?: string;
 }
 
-export function SmartSearch({ onGameFilter, games = mockGames, className }: Props) {
+export function SmartSearch({ onGameFilter, games = [], className }: Props) {
   const [q, setQ] = useState("");
   const [open, setOpen] = useState(false);
   const boxRef = useRef<HTMLDivElement>(null);
@@ -26,7 +25,6 @@ export function SmartSearch({ onGameFilter, games = mockGames, className }: Prop
     onGameFilter?.(q);
   }, [q, onGameFilter]);
 
-  // Close on outside click
   useEffect(() => {
     const onClick = (e: MouseEvent) => {
       if (!boxRef.current?.contains(e.target as Node)) setOpen(false);
@@ -35,7 +33,6 @@ export function SmartSearch({ onGameFilter, games = mockGames, className }: Prop
     return () => document.removeEventListener("mousedown", onClick);
   }, []);
 
-  // ⌘K / Ctrl+K shortcut
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "k") {
@@ -52,7 +49,6 @@ export function SmartSearch({ onGameFilter, games = mockGames, className }: Prop
     return () => document.removeEventListener("keydown", onKeyDown);
   }, []);
 
-  // Results already arrive in priority order: games → accounts → customers
   const hits = runSmartSearch(games, q);
   const gameHits = hits.filter((h) => h.kind === "game");
   const accountHits = hits.filter((h) => h.kind === "account");
@@ -105,7 +101,6 @@ export function SmartSearch({ onGameFilter, games = mockGames, className }: Prop
           ) : (
             <div className="max-h-96 overflow-y-auto py-1">
 
-              {/* 1️⃣ Games — highest priority */}
               {gameHits.length > 0 && (
                 <>
                   <div className="px-3 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
@@ -134,7 +129,6 @@ export function SmartSearch({ onGameFilter, games = mockGames, className }: Prop
                 </>
               )}
 
-              {/* 2️⃣ Accounts — second priority */}
               {accountHits.length > 0 && (
                 <>
                   <div className={cn("px-3 pb-1 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground", gameHits.length > 0 ? "mt-1 pt-2 border-t border-border" : "pt-2")}>
@@ -166,7 +160,6 @@ export function SmartSearch({ onGameFilter, games = mockGames, className }: Prop
                 </>
               )}
 
-              {/* 3️⃣ Customers / capacity — third priority */}
               {customerHits.length > 0 && (
                 <>
                   <div className={cn("px-3 pb-1 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground", (gameHits.length > 0 || accountHits.length > 0) ? "mt-1 pt-2 border-t border-border" : "pt-2")}>

@@ -2,10 +2,12 @@ import {
   createContext,
   useCallback,
   useContext,
+  useMemo,
   useState,
   type ReactNode,
 } from "react";
-import { games as initialGames } from "@/mocks/playSyncerMockData";
+import { useListGames } from "@workspace/api-client-react";
+import { games as mockGames } from "@/mocks/playSyncerMockData";
 import type { Game, GameStatus, Platform } from "@/domain/games/types";
 import type { Account, AccountInput } from "@/domain/accounts/types";
 import type { AccountSlot, CustomerInput } from "@/domain/slots/types";
@@ -13,7 +15,7 @@ import { normalizeAccountPrefix } from "@/domain/accounts/numberPrefix";
 import { normalizeOrderId } from "@/domain/slots/normalizeOrderId";
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Helpers (kept for local Account/Capacity state, which is out of PS-02B scope)
 // ---------------------------------------------------------------------------
 
 function generateSlots(platform: Platform, accountId: string): AccountSlot[] {
@@ -35,10 +37,6 @@ function generateSlots(platform: Platform, accountId: string): AccountSlot[] {
   return slots;
 }
 
-/**
- * Generate a per-game account number.
- * The prefix is already normalized — this function only appends the next sequence number.
- */
 function generateAccountNumber(prefix: string, accounts: Account[]): string {
   const max = accounts.reduce((m, a) => {
     const match = a.number.match(/(\d+)$/);
@@ -47,21 +45,11 @@ function generateAccountNumber(prefix: string, accounts: Account[]): string {
   return `#${prefix}-${String(max + 1).padStart(3, "0")}`;
 }
 
-/**
- * Resolve the display prefix for a new or edited account.
- * – If the user supplied a non-blank prefix → normalize and use it.
- * – Otherwise → normalize the parent game title (never the technical gameId).
- */
 function resolvePrefix(inputPrefix: string | undefined, gameTitle: string): string {
   const raw = inputPrefix?.trim();
   return normalizeAccountPrefix(raw && raw.length > 0 ? raw : gameTitle);
 }
 
-/**
- * Scan all accounts across all games and return the next unique accountCode.
- * Format: ACC-000001 … ACC-999999.
- * Safe to call inside setGames() with the previous-state snapshot.
- */
 function generateAccountCode(games: Game[]): string {
   let max = 0;
   for (const g of games) {
@@ -73,12 +61,10 @@ function generateAccountCode(games: Game[]): string {
   return `ACC-${String(max + 1).padStart(6, "0")}`;
 }
 
-/** Generate a unique customer ID using the slot ID as a stable namespace. */
 function generateCustomerId(slotId: string): string {
   return `${slotId}-cust-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 }
 
-/** Today's Jalali date as a simple YYYY/MM/DD string (uses JS date + rough conversion). */
 function todayJalali(): string {
   return new Date().toLocaleDateString("fa-IR-u-nu-latn", {
     year: "numeric",
@@ -92,8 +78,9 @@ function todayJalali(): string {
 // ---------------------------------------------------------------------------
 
 export interface GameMutations {
-  addGame: (data: { title: string; cover: string; platform: Platform; status: GameStatus }) => void;
-  editGame: (id: string, data: { title: string; cover: string; platform: Platform; status: GameStatus }) => void;
+  /** Stage B: no-op. Real create/edit will be wired in Stage C. */
+  addGame: (data: { title: string; coverUrl: string; platform: Platform; status: GameStatus }) => void;
+  editGame: (id: string, data: { title: string; coverUrl: string; platform: Platform; status: GameStatus }) => void;
   toggleGameStatus: (id: string) => void;
   deleteGame: (id: string) => void;
 }
@@ -106,16 +93,17 @@ export interface AccountMutations {
 }
 
 export interface CapacityMutations {
-  /** Add a customer assignment to a specific capacity (slot) inside an account. */
   addCapacityCustomer: (gameId: string, accountId: string, slotId: string, data: CustomerInput) => void;
-  /** Edit an existing customer assignment. */
   editCapacityCustomer: (gameId: string, accountId: string, slotId: string, customerId: string, data: CustomerInput) => void;
-  /** Remove a customer assignment. */
   removeCapacityCustomer: (gameId: string, accountId: string, slotId: string, customerId: string) => void;
 }
 
 interface GamesContextValue {
   games: Game[];
+  isLoading: boolean;
+  isError: boolean;
+  error: Error | null;
+  refetch: () => void;
   mutations: GameMutations;
   accountMutations: AccountMutations;
   capacityMutations: CapacityMutations;
@@ -128,56 +116,47 @@ const GamesContext = createContext<GamesContextValue | null>(null);
 // ---------------------------------------------------------------------------
 
 export function GamesProvider({ children }: { children: ReactNode }) {
-  const [games, setGames] = useState<Game[]>(initialGames);
+  // Games are now authoritative from the backend (PS-02A). Account data stays
+  // local/mock until the Account backend integration phase, so we keep the
+  // original mock accounts keyed by game ID. Real API games use UUIDs and will
+  // not accidentally merge with legacy mock game IDs.
+  const [accountsByGameId] = useState<Record<string, Account[]>>(() => {
+    const map: Record<string, Account[]> = {};
+    for (const game of mockGames) {
+      map[game.id] = game.accounts;
+    }
+    return map;
+  });
 
-  // -- Game mutations --------------------------------------------------------
+  const { data, isLoading, isError, error, refetch } = useListGames();
 
-  const addGame = useCallback<GameMutations["addGame"]>((data) => {
-    const newGame: Game = {
-      id: `game-${Date.now()}`,
-      accounts: [],
-      ...data,
-    };
-    setGames((prev) => [newGame, ...prev]);
+  const games = useMemo<Game[]>(() => {
+    const apiGames = data?.games ?? [];
+    return apiGames.map((apiGame) => ({
+      ...apiGame,
+      coverUrl: apiGame.coverUrl ?? "",
+      accounts: accountsByGameId[apiGame.id] ?? [],
+    }));
+  }, [data, accountsByGameId]);
+
+  // -- Game mutations (Stage B: disabled — no local-only mutation) ------------
+
+  const noOpGame = useCallback(() => {
+    // eslint-disable-next-line no-console
+    console.warn("PS-02B Stage B: Game write operations are disabled until Stage C.");
   }, []);
 
-  /**
-   * Edit a game. If the platform changes, all account slots are regenerated
-   * from the new platform — existing customer assignments inside those slots
-   * will be lost (mock-phase limitation; safe for frontend-only state).
-   */
-  const editGame = useCallback<GameMutations["editGame"]>((id, data) => {
-    setGames((prev) =>
-      prev.map((g) => {
-        if (g.id !== id) return g;
-        const platformChanged = g.platform !== data.platform;
-        const updatedAccounts = platformChanged
-          ? g.accounts.map((a) => ({
-              ...a,
-              slots: generateSlots(data.platform, a.id),
-            }))
-          : g.accounts;
-        return { ...g, ...data, accounts: updatedAccounts };
-      }),
-    );
-  }, []);
+  const addGame: GameMutations["addGame"] = noOpGame;
+  const editGame: GameMutations["editGame"] = noOpGame;
+  const toggleGameStatus: GameMutations["toggleGameStatus"] = noOpGame;
+  const deleteGame: GameMutations["deleteGame"] = noOpGame;
 
-  const toggleGameStatus = useCallback<GameMutations["toggleGameStatus"]>((id) => {
-    setGames((prev) =>
-      prev.map((g) =>
-        g.id === id ? { ...g, status: g.status === "active" ? "inactive" : "active" } : g,
-      ),
-    );
-  }, []);
+  // -- Account mutations (local state, unchanged for PS-02B) --------------------
 
-  const deleteGame = useCallback<GameMutations["deleteGame"]>((id) => {
-    setGames((prev) => prev.filter((g) => g.id !== id));
-  }, []);
-
-  // -- Account mutations -----------------------------------------------------
+  const [localGames, setLocalGames] = useState<Game[]>(() => mockGames);
 
   const addAccount = useCallback<AccountMutations["addAccount"]>((gameId, data) => {
-    setGames((prev) => {
+    setLocalGames((prev) => {
       const accountCode = generateAccountCode(prev);
       return prev.map((g) => {
         if (g.id !== gameId) return g;
@@ -198,7 +177,7 @@ export function GamesProvider({ children }: { children: ReactNode }) {
 
   const editAccount = useCallback<AccountMutations["editAccount"]>(
     (gameId, accountId, data) => {
-      setGames((prev) =>
+      setLocalGames((prev) =>
         prev.map((g) => {
           if (g.id !== gameId) return g;
           const accounts = g.accounts.map((a) => {
@@ -229,7 +208,7 @@ export function GamesProvider({ children }: { children: ReactNode }) {
 
   const toggleAccountStatus = useCallback<AccountMutations["toggleAccountStatus"]>(
     (gameId, accountId) => {
-      setGames((prev) =>
+      setLocalGames((prev) =>
         prev.map((g) => {
           if (g.id !== gameId) return g;
           const accounts = g.accounts.map((a) =>
@@ -245,7 +224,7 @@ export function GamesProvider({ children }: { children: ReactNode }) {
   );
 
   const deleteAccount = useCallback<AccountMutations["deleteAccount"]>((gameId, accountId) => {
-    setGames((prev) =>
+    setLocalGames((prev) =>
       prev.map((g) => {
         if (g.id !== gameId) return g;
         return { ...g, accounts: g.accounts.filter((a) => a.id !== accountId) };
@@ -253,11 +232,9 @@ export function GamesProvider({ children }: { children: ReactNode }) {
     );
   }, []);
 
-  // -- Capacity (slot) customer mutations ------------------------------------
-
   const addCapacityCustomer = useCallback<CapacityMutations["addCapacityCustomer"]>(
     (gameId, accountId, slotId, data) => {
-      setGames((prev) =>
+      setLocalGames((prev) =>
         prev.map((g) => {
           if (g.id !== gameId) return g;
           return {
@@ -288,7 +265,7 @@ export function GamesProvider({ children }: { children: ReactNode }) {
 
   const editCapacityCustomer = useCallback<CapacityMutations["editCapacityCustomer"]>(
     (gameId, accountId, slotId, customerId, data) => {
-      setGames((prev) =>
+      setLocalGames((prev) =>
         prev.map((g) => {
           if (g.id !== gameId) return g;
           return {
@@ -319,7 +296,7 @@ export function GamesProvider({ children }: { children: ReactNode }) {
 
   const removeCapacityCustomer = useCallback<CapacityMutations["removeCapacityCustomer"]>(
     (gameId, accountId, slotId, customerId) => {
-      setGames((prev) =>
+      setLocalGames((prev) =>
         prev.map((g) => {
           if (g.id !== gameId) return g;
           return {
@@ -345,9 +322,22 @@ export function GamesProvider({ children }: { children: ReactNode }) {
     <GamesContext.Provider
       value={{
         games,
+        isLoading,
+        isError,
+        error,
+        refetch,
         mutations: { addGame, editGame, toggleGameStatus, deleteGame },
-        accountMutations: { addAccount, editAccount, toggleAccountStatus, deleteAccount },
-        capacityMutations: { addCapacityCustomer, editCapacityCustomer, removeCapacityCustomer },
+        accountMutations: {
+          addAccount,
+          editAccount,
+          toggleAccountStatus,
+          deleteAccount,
+        },
+        capacityMutations: {
+          addCapacityCustomer,
+          editCapacityCustomer,
+          removeCapacityCustomer,
+        },
       }}
     >
       {children}

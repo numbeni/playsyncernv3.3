@@ -1,6 +1,6 @@
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { useEffect, useState } from "react";
-import { ChevronLeft, Plus, Gamepad2, ChevronsUpDown } from "lucide-react";
+import { ChevronLeft, Plus, Gamepad2, ChevronsUpDown, Loader2, AlertCircle, RefreshCw } from "lucide-react";
 import { SmartSearch } from "@/components/SmartSearch";
 import { AccountCard } from "@/components/AccountCard";
 import { AccountFormModal } from "@/components/AccountFormModal";
@@ -18,21 +18,47 @@ export default function GameDetailPage() {
   const [search] = useSearchParams();
   const highlight = search.get("highlight") ?? undefined;
 
-  const { games, accountMutations, capacityMutations } = useGames();
+  const { games, isLoading, isError, error, refetch, accountMutations, capacityMutations } = useGames();
   const game = games.find((g) => g.id === gameId);
 
-  // Modal state
   const [addOpen, setAddOpen] = useState(false);
   const [editingAccount, setEditingAccount] = useState<Account | null>(null);
   const [viewingAccount, setViewingAccount] = useState<Account | null>(null);
   const [deleteAccountId, setDeleteAccountId] = useState<string | null>(null);
 
-  // Expand / Collapse All signal — new object reference each click forces cards to sync
   const [expandSignal, setExpandSignal] = useState<{ open: boolean; rev: number } | null>(null);
 
   useEffect(() => {
     document.title = game ? `${game.title} — PlaySyncer` : "بازی — PlaySyncer";
   }, [game]);
+
+  if (isLoading) {
+    return (
+      <div className="mx-auto max-w-6xl px-4 py-10 text-center">
+        <Loader2 className="mx-auto h-8 w-8 animate-spin text-primary" />
+        <p className="mt-4 text-sm text-muted-foreground">در حال دریافت اطلاعات بازی…</p>
+      </div>
+    );
+  }
+
+  if (isError) {
+    return (
+      <div className="mx-auto max-w-6xl px-4 py-10">
+        <div className="rounded-2xl border border-destructive/30 bg-destructive/5 p-6 text-center">
+          <AlertCircle className="mx-auto h-8 w-8 text-destructive" />
+          <p className="mt-3 text-sm font-medium text-destructive">دریافت اطلاعات بازی با خطا مواجه شد</p>
+          {error && <p className="mt-1 text-xs text-muted-foreground">{error.message}</p>}
+          <button
+            onClick={refetch}
+            className="mt-4 inline-flex items-center gap-2 rounded-xl border border-border bg-card px-4 py-2 text-sm font-medium text-foreground hover:bg-accent transition-colors"
+          >
+            <RefreshCw className="h-4 w-4" />
+            تلاش مجدد
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   if (!game) return <NotFoundPage />;
 
@@ -62,7 +88,6 @@ export default function GameDetailPage() {
 
   return (
     <div className="mx-auto max-w-6xl px-4 py-6 sm:px-6 lg:px-10 lg:py-10">
-      {/* Breadcrumb */}
       <div className="mb-4 flex items-center gap-2 text-xs text-muted-foreground">
         <Link to="/" className="hover:text-foreground transition-colors">
           بازی‌ها
@@ -71,7 +96,6 @@ export default function GameDetailPage() {
         <span className="text-foreground">{game.title}</span>
       </div>
 
-      {/* SmartSearch — top of account workspace, searches across all games */}
       <div className="mb-6">
         <SmartSearch games={games} />
       </div>
@@ -80,7 +104,7 @@ export default function GameDetailPage() {
         <div className="grid grid-cols-1 md:grid-cols-[240px_minmax(0,1fr)]">
           <div className="relative aspect-[16/10] md:aspect-auto md:h-full bg-muted">
             <img
-              src={game.cover}
+              src={game.coverUrl}
               alt={game.title}
               className="h-full w-full object-cover"
             />
@@ -95,7 +119,7 @@ export default function GameDetailPage() {
                     <Gamepad2 className="h-3 w-3" />
                     {platformLabel(game.platform)}
                   </span>
-                  {game.status === "inactive" && (
+                  {game.status === "INACTIVE" && (
                     <span className="inline-flex items-center gap-1 rounded-full bg-muted border border-border px-2.5 py-1 text-[11px] font-semibold text-muted-foreground">
                       غیرفعال
                     </span>
@@ -184,7 +208,6 @@ export default function GameDetailPage() {
         )}
       </section>
 
-      {/* Add Account Modal */}
       <AccountFormModal
         open={addOpen}
         mode="add"
@@ -194,7 +217,6 @@ export default function GameDetailPage() {
         onClose={() => setAddOpen(false)}
       />
 
-      {/* Edit Account Modal */}
       <AccountFormModal
         open={editingAccount !== null}
         mode="edit"
@@ -205,7 +227,6 @@ export default function GameDetailPage() {
         onClose={() => setEditingAccount(null)}
       />
 
-      {/* View Details Modal */}
       <AccountDetailsModal
         open={viewingAccount !== null}
         account={viewingAccount}
@@ -213,7 +234,6 @@ export default function GameDetailPage() {
         onClose={() => setViewingAccount(null)}
       />
 
-      {/* Delete Confirmation */}
       <ConfirmDialog
         open={deleteAccountId !== null}
         title="حذف اکانت"

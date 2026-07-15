@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Plus } from "lucide-react";
+import { Plus, RefreshCw, AlertCircle, Loader2 } from "lucide-react";
 import { SmartSearch } from "@/components/SmartSearch";
 import { GameCard } from "@/components/GameCard";
 import { GameFormModal, type GameFormData } from "@/components/GameFormModal";
@@ -17,7 +17,7 @@ type DialogState =
   | { kind: "delete"; game: Game };
 
 export default function GamesPage() {
-  const { games, mutations } = useGames();
+  const { games, isLoading, isError, error, refetch } = useGames();
   const [query, setQuery] = useState("");
   const [dialog, setDialog] = useState<DialogState>({ kind: "none" });
 
@@ -47,39 +47,25 @@ export default function GamesPage() {
     );
   }, [games]);
 
-  // --- Handlers ---
+  // Stage B: write controls are intentionally disabled.
+  const handleAdd = useCallback(() => {
+    setDialog({ kind: "add" });
+  }, []);
 
-  const handleAdd = useCallback(
-    (data: GameFormData) => {
-      mutations.addGame(data);
-      setDialog({ kind: "none" });
-    },
-    [mutations],
-  );
+  const handleEdit = useCallback((game: Game) => {
+    setDialog({ kind: "edit", game });
+  }, []);
 
-  const handleEdit = useCallback(
-    (data: GameFormData) => {
-      if (dialog.kind !== "edit") return;
-      mutations.editGame(dialog.game.id, data);
-      setDialog({ kind: "none" });
-    },
-    [dialog, mutations],
-  );
+  const handleDisable = useCallback((game: Game) => {
+    setDialog({ kind: "disable", game });
+  }, []);
 
-  const handleToggleDisable = useCallback(() => {
-    if (dialog.kind !== "disable") return;
-    mutations.toggleGameStatus(dialog.game.id);
-    setDialog({ kind: "none" });
-  }, [dialog, mutations]);
-
-  const handleDelete = useCallback(() => {
-    if (dialog.kind !== "delete") return;
-    mutations.deleteGame(dialog.game.id);
-    setDialog({ kind: "none" });
-  }, [dialog, mutations]);
+  const handleDelete = useCallback((game: Game) => {
+    setDialog({ kind: "delete", game });
+  }, []);
 
   const disableGame = dialog.kind === "disable" ? dialog.game : null;
-  const isCurrentlyActive = disableGame?.status === "active";
+  const isCurrentlyActive = disableGame?.status === "ACTIVE";
   const deleteGame = dialog.kind === "delete" ? dialog.game : null;
 
   return (
@@ -97,8 +83,10 @@ export default function GamesPage() {
 
         {can("game.create") && (
           <button
-            onClick={() => setDialog({ kind: "add" })}
-            className="shrink-0 inline-flex items-center gap-2 rounded-xl gradient-primary px-3 py-2 text-sm font-semibold text-primary-foreground shadow-soft transition-shadow hover:shadow-glow sm:px-4"
+            onClick={handleAdd}
+            disabled={isLoading}
+            title="افزودن بازی در مرحله بعدی (C) فعال می‌شود"
+            className="shrink-0 inline-flex items-center gap-2 rounded-xl gradient-primary px-3 py-2 text-sm font-semibold text-primary-foreground shadow-soft transition-shadow hover:shadow-glow disabled:opacity-60 disabled:cursor-not-allowed sm:px-4"
           >
             <Plus className="h-4 w-4" />
             <span className="hidden sm:inline">افزودن بازی</span>
@@ -121,47 +109,43 @@ export default function GamesPage() {
 
       {/* Game grid */}
       <section className="mt-8">
-        {filtered.length === 0 ? (
-          <div className="rounded-2xl border border-dashed border-border bg-card p-10 text-center">
-            <p className="text-sm text-muted-foreground">
-              {query
-                ? `بازی‌ای با «${query}» پیدا نشد.`
-                : "هیچ بازی‌ای وجود ندارد. اولین بازی را اضافه کنید."}
-            </p>
-          </div>
+        {isLoading ? (
+          <LoadingState />
+        ) : isError ? (
+          <ErrorState error={error} onRetry={refetch} />
+        ) : filtered.length === 0 ? (
+          <EmptyState hasQuery={Boolean(query)} query={query} />
         ) : (
           <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
             {filtered.map((g) => (
               <GameCard
                 key={g.id}
                 game={g}
-                onEdit={(game) => setDialog({ kind: "edit", game })}
-                onDisable={(game) => setDialog({ kind: "disable", game })}
-                onDelete={(game) => setDialog({ kind: "delete", game })}
+                // Stage B: no write callbacks attached so GameCard hides edit/disable/delete.
               />
             ))}
           </div>
         )}
       </section>
 
-      {/* Add Game modal */}
+      {/* Add Game modal — form submit is disabled in Stage B via the modal itself. */}
       <GameFormModal
         open={dialog.kind === "add"}
         mode="add"
-        onSave={handleAdd}
+        onSave={() => {}}
         onClose={() => setDialog({ kind: "none" })}
       />
 
-      {/* Edit Game modal */}
+      {/* Edit Game modal — disabled in Stage B. */}
       <GameFormModal
         open={dialog.kind === "edit"}
         mode="edit"
         initial={dialog.kind === "edit" ? dialog.game : undefined}
-        onSave={handleEdit}
+        onSave={() => {}}
         onClose={() => setDialog({ kind: "none" })}
       />
 
-      {/* Disable / Enable confirmation */}
+      {/* Disable / Enable confirmation — disabled in Stage B. */}
       <ConfirmDialog
         open={dialog.kind === "disable"}
         title={isCurrentlyActive ? "غیرفعال‌سازی بازی" : "فعال‌سازی بازی"}
@@ -172,18 +156,18 @@ export default function GamesPage() {
         }
         confirmLabel={isCurrentlyActive ? "غیرفعال‌سازی" : "فعال‌سازی"}
         confirmVariant="warning"
-        onConfirm={handleToggleDisable}
+        onConfirm={() => setDialog({ kind: "none" })}
         onCancel={() => setDialog({ kind: "none" })}
       />
 
-      {/* Delete confirmation */}
+      {/* Delete confirmation — disabled in Stage B. */}
       <ConfirmDialog
         open={dialog.kind === "delete"}
         title="حذف بازی"
         description={`آیا از حذف «${deleteGame?.title}» مطمئنید؟ این عمل قابل بازگشت نیست.`}
         confirmLabel="حذف دائمی"
         confirmVariant="danger"
-        onConfirm={handleDelete}
+        onConfirm={() => setDialog({ kind: "none" })}
         onCancel={() => setDialog({ kind: "none" })}
       />
     </div>
@@ -214,6 +198,44 @@ function OverviewStat({
       >
         {value.toLocaleString("fa-IR")}
       </div>
+    </div>
+  );
+}
+
+function LoadingState() {
+  return (
+    <div className="rounded-2xl border border-border bg-card p-10 text-center">
+      <Loader2 className="mx-auto h-8 w-8 animate-spin text-primary" />
+      <p className="mt-4 text-sm text-muted-foreground">در حال دریافت بازی‌ها…</p>
+    </div>
+  );
+}
+
+function ErrorState({ error, onRetry }: { error: Error | null; onRetry: () => void }) {
+  return (
+    <div className="rounded-2xl border border-destructive/30 bg-destructive/5 p-6 text-center">
+      <AlertCircle className="mx-auto h-8 w-8 text-destructive" />
+      <p className="mt-3 text-sm font-medium text-destructive">دریافت بازی‌ها با خطا مواجه شد</p>
+      {error && <p className="mt-1 text-xs text-muted-foreground">{error.message}</p>}
+      <button
+        onClick={onRetry}
+        className="mt-4 inline-flex items-center gap-2 rounded-xl border border-border bg-card px-4 py-2 text-sm font-medium text-foreground hover:bg-accent transition-colors"
+      >
+        <RefreshCw className="h-4 w-4" />
+        تلاش مجدد
+      </button>
+    </div>
+  );
+}
+
+function EmptyState({ hasQuery, query }: { hasQuery: boolean; query: string }) {
+  return (
+    <div className="rounded-2xl border border-dashed border-border bg-card p-10 text-center">
+      <p className="text-sm text-muted-foreground">
+        {hasQuery
+          ? `بازی‌ای با «${query}» پیدا نشد.`
+          : "هیچ بازی‌ای وجود ندارد. اولین بازی را اضافه کنید."}
+      </p>
     </div>
   );
 }

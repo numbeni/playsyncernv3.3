@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { X, Gamepad2, Image as ImageIcon } from "lucide-react";
+import { X, Gamepad2, Image as ImageIcon, Lock } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { Game, GameStatus, Platform } from "@/domain/games/types";
 
@@ -9,7 +9,7 @@ const PLACEHOLDER_COVER =
 
 export interface GameFormData {
   title: string;
-  cover: string;
+  coverUrl: string;
   platform: Platform;
   status: GameStatus;
 }
@@ -29,8 +29,8 @@ const PLATFORMS: { value: Platform; label: string; desc: string }[] = [
 ];
 
 const STATUSES: { value: GameStatus; label: string }[] = [
-  { value: "active", label: "فعال" },
-  { value: "inactive", label: "غیرفعال" },
+  { value: "ACTIVE", label: "فعال" },
+  { value: "INACTIVE", label: "غیرفعال" },
 ];
 
 const OPEN_ANIMATION_MS = 520;
@@ -38,9 +38,9 @@ const CLOSE_ANIMATION_MS = 260;
 
 export function GameFormModal({ open, mode, initial, onSave, onClose }: Props) {
   const [title, setTitle] = useState("");
-  const [cover, setCover] = useState("");
+  const [coverUrl, setCoverUrl] = useState("");
   const [platform, setPlatform] = useState<Platform>("PS5_ONLY");
-  const [status, setStatus] = useState<GameStatus>("active");
+  const [status, setStatus] = useState<GameStatus>("ACTIVE");
   const [errors, setErrors] = useState<
     Partial<Record<"title" | "platform", string>>
   >({});
@@ -72,7 +72,6 @@ export function GameFormModal({ open, mode, initial, onSave, onClose }: Props) {
     }, CLOSE_ANIMATION_MS);
   };
 
-  // Sync fields when modal opens and trigger a real two-step enter transition.
   useEffect(() => {
     if (!open) return;
 
@@ -81,14 +80,14 @@ export function GameFormModal({ open, mode, initial, onSave, onClose }: Props) {
 
     if (mode === "edit" && initial) {
       setTitle(initial.title);
-      setCover(initial.cover === PLACEHOLDER_COVER ? "" : initial.cover);
+      setCoverUrl(initial.coverUrl === PLACEHOLDER_COVER ? "" : initial.coverUrl);
       setPlatform(initial.platform);
       setStatus(initial.status);
     } else {
       setTitle("");
-      setCover("");
+      setCoverUrl("");
       setPlatform("PS5_ONLY");
-      setStatus("active");
+      setStatus("ACTIVE");
     }
 
     setErrors({});
@@ -100,8 +99,6 @@ export function GameFormModal({ open, mode, initial, onSave, onClose }: Props) {
       });
     });
 
-    // Desktop-only autofocus. On mobile it opens the keyboard and breaks the
-    // bottom-sheet viewport layout.
     if (
       typeof window !== "undefined" &&
       window.matchMedia("(min-width: 640px)").matches
@@ -112,7 +109,6 @@ export function GameFormModal({ open, mode, initial, onSave, onClose }: Props) {
     return clearAnimationHandles;
   }, [open, mode, initial]);
 
-  // Close on Escape with exit animation.
   useEffect(() => {
     if (!open) return;
 
@@ -124,7 +120,6 @@ export function GameFormModal({ open, mode, initial, onSave, onClose }: Props) {
     return () => document.removeEventListener("keydown", handler);
   }, [open]);
 
-  // Lock body scroll. The form body inside the modal handles scrolling.
   useEffect(() => {
     if (!open) return;
 
@@ -154,7 +149,7 @@ export function GameFormModal({ open, mode, initial, onSave, onClose }: Props) {
 
     onSave({
       title: title.trim(),
-      cover: cover.trim() || PLACEHOLDER_COVER,
+      coverUrl: coverUrl.trim() || PLACEHOLDER_COVER,
       platform,
       status,
     });
@@ -167,7 +162,6 @@ export function GameFormModal({ open, mode, initial, onSave, onClose }: Props) {
       aria-modal="true"
       aria-labelledby="game-form-title"
     >
-      {/* Backdrop */}
       <div
         className={cn(
           "absolute inset-0 bg-background/80 backdrop-blur-sm transition-opacity duration-300 ease-out",
@@ -176,7 +170,6 @@ export function GameFormModal({ open, mode, initial, onSave, onClose }: Props) {
         onClick={requestClose}
       />
 
-      {/* Mobile: bottom sheet / Desktop: centered modal */}
       <div
         className={cn(
           "relative z-[301] flex min-h-0 w-full flex-col overflow-hidden border border-border bg-card shadow-elevated",
@@ -194,12 +187,10 @@ export function GameFormModal({ open, mode, initial, onSave, onClose }: Props) {
             : `${CLOSE_ANIMATION_MS}ms`,
         }}
       >
-        {/* Mobile drag handle */}
         <div className="flex shrink-0 justify-center pt-2 sm:hidden">
           <div className="h-1 w-11 rounded-full bg-muted-foreground/30" />
         </div>
 
-        {/* Header */}
         <div className="sticky top-0 z-10 flex shrink-0 items-center justify-between gap-3 border-b border-border bg-card/95 px-4 py-3 backdrop-blur sm:px-5 sm:py-4">
           <div className="flex min-w-0 items-center gap-3">
             <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl gradient-primary text-primary-foreground shadow-glow">
@@ -228,9 +219,7 @@ export function GameFormModal({ open, mode, initial, onSave, onClose }: Props) {
           noValidate
           className="flex min-h-0 flex-1 flex-col"
         >
-          {/* Scrollable body */}
           <div className="min-h-0 flex-1 overscroll-contain touch-pan-y space-y-4 overflow-y-auto px-4 py-4 sm:space-y-5 sm:px-5 sm:py-5">
-            {/* Title */}
             <Field label="عنوان بازی" required error={errors.title}>
               <input
                 ref={titleRef}
@@ -251,7 +240,6 @@ export function GameFormModal({ open, mode, initial, onSave, onClose }: Props) {
               />
             </Field>
 
-            {/* Cover URL */}
             <Field
               label="آدرس تصویر (اختیاری)"
               hint="در صورت خالی بودن، تصویر پیش‌فرض استفاده می‌شود"
@@ -260,18 +248,18 @@ export function GameFormModal({ open, mode, initial, onSave, onClose }: Props) {
                 <ImageIcon className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground pointer-events-none" />
                 <input
                   type="url"
-                  value={cover}
-                  onChange={(e) => setCover(e.target.value)}
+                  value={coverUrl}
+                  onChange={(e) => setCoverUrl(e.target.value)}
                   placeholder="https://…"
                   dir="ltr"
                   className="w-full rounded-xl border border-border bg-muted/40 py-3 pr-10 pl-4 text-sm outline-none placeholder:text-muted-foreground/60 transition-all focus:border-primary/60 focus:ring-2 focus:ring-ring/30 sm:py-2.5"
                 />
               </div>
 
-              {cover && (
+              {coverUrl && (
                 <div className="mt-2 h-24 overflow-hidden rounded-xl border border-border bg-muted sm:h-28">
                   <img
-                    src={cover}
+                    src={coverUrl}
                     alt="پیش‌نمایش"
                     className="h-full w-full object-cover"
                     onError={(e) => (e.currentTarget.style.display = "none")}
@@ -280,7 +268,6 @@ export function GameFormModal({ open, mode, initial, onSave, onClose }: Props) {
               )}
             </Field>
 
-            {/* Platform */}
             <Field label="پلتفرم" required error={errors.platform}>
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                 {PLATFORMS.map((p) => (
@@ -311,7 +298,6 @@ export function GameFormModal({ open, mode, initial, onSave, onClose }: Props) {
               </div>
             </Field>
 
-            {/* Status */}
             <Field label="وضعیت">
               <div className="grid grid-cols-2 gap-2">
                 {STATUSES.map((s) => (
@@ -322,7 +308,7 @@ export function GameFormModal({ open, mode, initial, onSave, onClose }: Props) {
                     className={cn(
                       "rounded-xl border py-3 text-center text-sm font-medium transition-all sm:py-2",
                       status === s.value
-                        ? s.value === "active"
+                        ? s.value === "ACTIVE"
                           ? "border-success bg-success/10 text-success"
                           : "border-muted-foreground/40 bg-muted text-muted-foreground"
                         : "border-border bg-muted/40 text-muted-foreground hover:border-muted-foreground/40",
@@ -335,7 +321,6 @@ export function GameFormModal({ open, mode, initial, onSave, onClose }: Props) {
             </Field>
           </div>
 
-          {/* Footer */}
           <div
             className={cn(
               "sticky bottom-0 z-10 grid shrink-0 grid-cols-2 gap-2 border-t border-border bg-card/95 px-4 py-3 backdrop-blur",
@@ -353,8 +338,10 @@ export function GameFormModal({ open, mode, initial, onSave, onClose }: Props) {
 
             <button
               type="submit"
-              className="inline-flex items-center justify-center rounded-xl gradient-primary px-4 py-3 text-sm font-semibold text-primary-foreground shadow-soft transition-all hover:shadow-glow sm:px-5 sm:py-2"
+              disabled
+              className="inline-flex items-center justify-center gap-2 rounded-xl bg-muted px-4 py-3 text-sm font-semibold text-muted-foreground cursor-not-allowed sm:px-5 sm:py-2"
             >
+              <Lock className="h-4 w-4" />
               {mode === "add" ? "افزودن بازی" : "ذخیره تغییرات"}
             </button>
           </div>
