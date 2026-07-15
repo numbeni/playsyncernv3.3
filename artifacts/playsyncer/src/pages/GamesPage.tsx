@@ -15,6 +15,12 @@ export default function GamesPage() {
   const [editingGame, setEditingGame] = useState<Game | undefined>(undefined);
   const [confirmGame, setConfirmGame] = useState<Game | null>(null);
 
+  // Delete flow: two separate dialogs depending on accountCount.
+  // deleteTarget drives both; hasAccountsDialogOpen shows the "info only" dialog.
+  const [deleteTarget, setDeleteTarget] = useState<Game | null>(null);
+  const [hasAccountsDialogOpen, setHasAccountsDialogOpen] = useState(false);
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+
   useEffect(() => {
     document.title = "بازی‌ها — PlaySyncer";
   }, []);
@@ -54,6 +60,15 @@ export default function GamesPage() {
     setConfirmGame(game);
   };
 
+  const openDeleteDialog = (game: Game) => {
+    setDeleteTarget(game);
+    if (game.accountCount > 0) {
+      setHasAccountsDialogOpen(true);
+    } else {
+      setDeleteConfirmOpen(true);
+    }
+  };
+
   const handleSave = async (data: Parameters<typeof mutations.addGame>[0]) => {
     if (formMode === "add") {
       await mutations.addGame(data);
@@ -66,6 +81,17 @@ export default function GamesPage() {
     if (!confirmGame) return;
     await mutations.toggleGameStatus(confirmGame.id);
     setConfirmGame(null);
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!deleteTarget) return;
+    // The hook's deleteGame already uses formatApiError with { operation: "delete" }
+    // so thrown errors are already Persian-safe when caught by ConfirmDialog.
+    await mutations.deleteGame(deleteTarget.id);
+    // On success: list refetch has already completed inside deleteGame.
+    // Close the dialog.
+    setDeleteConfirmOpen(false);
+    setDeleteTarget(null);
   };
 
   return (
@@ -118,6 +144,7 @@ export default function GamesPage() {
                 game={g}
                 onEdit={openEdit}
                 onToggleStatus={openStatusConfirm}
+                onDelete={openDeleteDialog}
               />
             ))}
           </div>
@@ -132,6 +159,7 @@ export default function GamesPage() {
         onClose={() => setFormOpen(false)}
       />
 
+      {/* Status toggle confirmation */}
       <ConfirmDialog
         open={confirmGame !== null}
         title={confirmGame?.status === "ACTIVE" ? "غیرفعال کردن بازی" : "فعال کردن بازی"}
@@ -144,6 +172,45 @@ export default function GamesPage() {
         confirmVariant={confirmGame?.status === "ACTIVE" ? "danger" : "warning"}
         onConfirm={handleConfirmStatus}
         onCancel={() => setConfirmGame(null)}
+      />
+
+      {/* Delete — info dialog when game has accounts (frontend guard, no API call) */}
+      <ConfirmDialog
+        open={hasAccountsDialogOpen}
+        title="حذف امکان‌پذیر نیست"
+        description={
+          deleteTarget
+            ? `بازی «${deleteTarget.title}» دارای ${deleteTarget.accountCount} اکانت است و امکان حذف ندارد. برای حذف ابتدا اکانت‌ها را حذف کنید یا وضعیت بازی را به غیرفعال تغییر دهید.`
+            : "این بازی دارای اکانت است و امکان حذف ندارد."
+        }
+        confirmLabel="متوجه شدم"
+        confirmVariant="warning"
+        onConfirm={() => {
+          setHasAccountsDialogOpen(false);
+          setDeleteTarget(null);
+        }}
+        onCancel={() => {
+          setHasAccountsDialogOpen(false);
+          setDeleteTarget(null);
+        }}
+      />
+
+      {/* Delete — destructive confirm when game has no accounts */}
+      <ConfirmDialog
+        open={deleteConfirmOpen}
+        title="حذف دائمی بازی"
+        description={
+          deleteTarget
+            ? `آیا از حذف دائمی بازی «${deleteTarget.title}» مطمئن هستید؟ این عملیات قابل بازگشت نیست.`
+            : "آیا از حذف این بازی مطمئن هستید؟"
+        }
+        confirmLabel="حذف بازی"
+        confirmVariant="danger"
+        onConfirm={handleConfirmDelete}
+        onCancel={() => {
+          setDeleteConfirmOpen(false);
+          setDeleteTarget(null);
+        }}
       />
     </div>
   );

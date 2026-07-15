@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AlertTriangle, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -23,16 +23,19 @@ export function ConfirmDialog({
 }: Props) {
   const [isPending, setIsPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Synchronous lock — set before any setState or await so rapid double-clicks
+  // cannot invoke onConfirm twice even if React batches the state update.
+  const pendingRef = useRef(false);
 
   // Close on Escape
   useEffect(() => {
     if (!open) return;
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !isPending) onCancel();
+      if (e.key === "Escape" && !pendingRef.current) onCancel();
     };
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
-  }, [open, onCancel, isPending]);
+  }, [open, onCancel]);
 
   // Lock body scroll; overlay itself is scrollable
   useEffect(() => {
@@ -49,24 +52,31 @@ export function ConfirmDialog({
     if (open) {
       setIsPending(false);
       setError(null);
+      pendingRef.current = false;
     }
   }, [open]);
 
   if (!open) return null;
 
   const handleConfirm = async () => {
-    if (isPending) return;
+    // Check the synchronous ref first — state updates are asynchronous and a
+    // rapid double-click can reach here before isPending becomes true.
+    if (pendingRef.current) return;
+    pendingRef.current = true; // synchronous guard before any setState / await
+
     setIsPending(true);
     setError(null);
 
     try {
       await onConfirm();
+      // On success the caller closes the dialog; keep the lock active until
+      // the open effect resets it on the next open cycle.
     } catch (err) {
       const message = err instanceof Error ? err.message : "عملیات با خطا مواجه شد";
       setError(message);
-      // Keep the dialog open; unlock so the user can retry.
-    } finally {
+      // Unlock on failure so the user can retry.
       setIsPending(false);
+      pendingRef.current = false;
     }
   };
 

@@ -12,7 +12,11 @@ function isApiErrorLike(error: unknown): error is ApiErrorLike {
   );
 }
 
-export function formatApiError(error: unknown): string {
+export interface ApiErrorContext {
+  operation?: "delete";
+}
+
+export function formatApiError(error: unknown, context?: ApiErrorContext): string {
   if (isApiErrorLike(error)) {
     const status = error.status;
     const data = error.data as { error?: string; message?: string } | undefined;
@@ -27,6 +31,10 @@ export function formatApiError(error: unknown): string {
     }
 
     if (status === 409) {
+      // Delete-specific: backend rejected due to existing account/order history.
+      if (context?.operation === "delete") {
+        return "این بازی دارای اکانت یا سفارش است و امکان حذف ندارد. می‌توانید وضعیت آن را به غیرفعال تغییر دهید.";
+      }
       const lowered = serverMessage.toLowerCase();
       if (lowered.includes("platform") || lowered.includes("پلتفرم")) {
         return "پس از ثبت اکانت، امکان تغییر پلتفرم وجود ندارد.";

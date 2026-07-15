@@ -11,6 +11,7 @@ import {
   useListGames,
   useCreateGame,
   useUpdateGame,
+  useDeleteGame,
   getListGamesQueryKey,
 } from "@workspace/api-client-react";
 import type { Game, GameStatus, Platform } from "@/domain/games/types";
@@ -33,7 +34,7 @@ export interface GameMutations {
   addGame: (data: GameFormData) => Promise<void>;
   editGame: (id: string, data: GameFormData) => Promise<void>;
   toggleGameStatus: (id: string) => Promise<void>;
-  deleteGame: (id: string) => void;
+  deleteGame: (id: string) => Promise<void>;
 }
 
 export interface AccountMutations {
@@ -85,9 +86,11 @@ export function GamesProvider({ children }: { children: ReactNode }) {
   // disables the button slightly late or rapid events fire across components.
   const createLockRef = useRef(false);
   const updateLockRef = useRef(false);
+  const deleteLockRef = useRef(false);
 
   const createGame = useCreateGame();
   const updateGame = useUpdateGame();
+  const deleteGameMutation = useDeleteGame();
 
   // Helper: wait for the active Games list query to refetch before resolving.
   // This ensures the caller can safely close the modal/dialog after synchronization.
@@ -172,8 +175,22 @@ export function GamesProvider({ children }: { children: ReactNode }) {
     [games, updateGame, syncGamesList],
   );
 
-  // Stage C1: Delete remains out of scope.
-  const deleteGame = useCallback(() => {}, []);
+  const deleteGame = useCallback(
+    async (id: string) => {
+      if (deleteLockRef.current) return;
+      deleteLockRef.current = true;
+
+      try {
+        await deleteGameMutation.mutateAsync({ id });
+        await syncGamesList();
+      } catch (err) {
+        throw new Error(formatApiError(err, { operation: "delete" }));
+      } finally {
+        deleteLockRef.current = false;
+      }
+    },
+    [deleteGameMutation, syncGamesList],
+  );
 
   // Stage C1: Account/Capacity mutations remain disabled.
   const addAccount: AccountMutations["addAccount"] = useCallback(() => {}, []);

@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import { ArrowRight, Gamepad2, Pencil, Power } from "lucide-react";
+import { ArrowRight, Gamepad2, Pencil, Power, Trash2 } from "lucide-react";
 import type { Game } from "@/domain/games/types";
 import { platformLabel } from "@/domain/games/platform";
 import { cn } from "@/lib/utils";
@@ -11,9 +11,10 @@ interface Props {
   game: Game;
   onEdit?: (game: Game) => void;
   onToggleStatus?: (game: Game) => void;
+  onDelete?: (game: Game) => void;
 }
 
-export function GameCard({ game, onEdit, onToggleStatus }: Props) {
+export function GameCard({ game, onEdit, onToggleStatus, onDelete }: Props) {
   const isPs5Only = game.platform === "PS5_ONLY";
   const isActive = game.status === "ACTIVE";
   const coverUrl = game.coverUrl || FALLBACK_COVER;
@@ -117,6 +118,16 @@ export function GameCard({ game, onEdit, onToggleStatus }: Props) {
           aria-label={isActive ? "غیرفعال کردن بازی" : "فعال کردن بازی"}
         >
           <Power className={cn("h-4 w-4", isActive ? "text-warning" : "text-success")} />
+        </button>
+
+        {/* Delete */}
+        <button
+          type="button"
+          onClick={() => onDelete?.(game)}
+          className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-destructive/30 bg-destructive/10 text-destructive hover:bg-destructive/20 transition-colors"
+          aria-label="حذف بازی"
+        >
+          <Trash2 className="h-4 w-4" />
         </button>
       </div>
     </div>

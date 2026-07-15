@@ -42,6 +42,9 @@ export function GameFormModal({ open, mode, initial, onSave, onClose }: Props) {
   const previousBodyOverflow = useRef<string>("");
   const closeTimerRef = useRef<number | null>(null);
   const rafRef = useRef<number | null>(null);
+  // Synchronous lock — set before any setState or await so rapid clicks
+  // cannot fire a second submission even if React batches state updates.
+  const submittingRef = useRef(false);
 
   const platformLocked = mode === "edit" && (initial?.accountCount ?? 0) > 0;
 
@@ -74,6 +77,7 @@ export function GameFormModal({ open, mode, initial, onSave, onClose }: Props) {
     setEntered(false);
     setIsSubmitting(false);
     setSubmitError(null);
+    submittingRef.current = false;
 
     if (mode === "edit" && initial) {
       setTitle(initial.title);
@@ -142,7 +146,10 @@ export function GameFormModal({ open, mode, initial, onSave, onClose }: Props) {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!validate() || isSubmitting) return;
+    // Check the synchronous ref first — state updates are asynchronous and a
+    // rapid double-click can reach here before isSubmitting becomes true.
+    if (!validate() || submittingRef.current) return;
+    submittingRef.current = true; // synchronous guard before any setState / await
 
     setIsSubmitting(true);
     setSubmitError(null);
@@ -154,14 +161,15 @@ export function GameFormModal({ open, mode, initial, onSave, onClose }: Props) {
         platform,
         status,
       });
-      // Keep the submit lock active during the close animation so the user
-      // cannot fire another request while the panel is sliding out.
+      // Keep the submit lock (both ref and state) active during the close
+      // animation so the user cannot fire another request while sliding out.
       requestClose();
     } catch (err) {
       const message = err instanceof Error ? err.message : "عملیات با خطا مواجه شد";
       setSubmitError(message);
       // Unlock on failure so the user can retry.
       setIsSubmitting(false);
+      submittingRef.current = false;
     }
   };
 
