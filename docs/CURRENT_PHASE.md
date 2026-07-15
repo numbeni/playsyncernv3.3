@@ -19,6 +19,7 @@ PS-02B_COMPLETED
 - Games use the real backend API.
 - Create, Edit, Status, and Delete persist through PostgreSQL.
 - Games mock data is no longer runtime authority.
+- Legacy Account/Capacity mock data is preserved only as a non-runtime fixture in `fixtures/legacy/playSyncerMockData.ts`.
 - Account and Capacity integration remain outside PS-02B.
 - SmartSearch currently searches only Games.
 - No database schema change occurred in Stage D.

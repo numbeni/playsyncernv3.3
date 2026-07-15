@@ -312,3 +312,13 @@ Verification steps performed:
 - PS-02B is marked **COMPLETED**.
 - No next phase was started.
 - No Account, Capacity, Orders, Game Import, Authentication, or RBAC work was implemented.
+
+## 2026-07-15 — PS-02B Final Packaging Correction
+
+- Recovered the exact pre-Stage-D `playSyncerMockData.ts` from Git history (commit `1aad29c`).
+- Stored it as a non-runtime fixture at `fixtures/legacy/playSyncerMockData.ts` with a README.
+- Confirmed the fixture is **not** imported by any runtime file under `artifacts/playsyncer/src`.
+- Removed the stale `playsyncer-ps02b-closed.zip` package.
+- Updated `docs/CURRENT_PHASE.md` to state that the legacy Account/Capacity mock data is preserved only as a non-runtime fixture.
+- No runtime source changes, no database changes, and no next-phase work were performed.
+- Final package: `playsyncer-ps02b-final.zip` (SHA-256 reported separately).
