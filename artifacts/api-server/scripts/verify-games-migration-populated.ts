@@ -146,9 +146,86 @@ async function verifyConflictFailure() {
   }
 }
 
+async function verifyOverLengthTitleFailure() {
+  const { databaseUrl, stop } = await startTestPg({ skipMigrations: true });
+  try {
+    runSqlFile(databaseUrl, path.join(MIGRATIONS_DIR, "0000_zippy_leech.sql"));
+
+    const longTitle = "A".repeat(121);
+    runSql(
+      databaseUrl,
+      `INSERT INTO "games" ("title", "platform", "status") VALUES
+        ('${longTitle}', 'PS5_ONLY', 'active');`,
+    );
+
+    let error: Error | undefined;
+    try {
+      runSqlFile(
+        databaseUrl,
+        path.join(MIGRATIONS_DIR, "0001_glossy_onslaught.sql"),
+      );
+    } catch (err) {
+      error = err as Error;
+    }
+
+    assert.ok(
+      error,
+      "migration should fail on a cleaned title longer than 120 characters",
+    );
+    const message = String(error);
+    assert.ok(
+      message.includes("Migration failed: one or more Game titles exceed 120 characters after cleaning"),
+      "error should clearly diagnose the over-length title problem: " + message,
+    );
+
+    // No silent truncation, rename, merge, or deletion: the original row still
+    // exists with its long title and the unique index / constraints that come
+    // after the DO block were not applied. (The column is added before the
+    // validation block, so the failure occurs before it is populated or made
+    // required; the row remains unchanged.)
+    const count = querySql(
+      databaseUrl,
+      `SELECT count(*) FROM "games" WHERE "title" = '${longTitle}';`,
+    );
+    assert.ok(count.trim() === "1", "original long-title row should still exist");
+
+    const titleNormalizedNotNull = querySql(
+      databaseUrl,
+      `SELECT count(*) FROM information_schema.columns WHERE table_name = 'games' AND column_name = 'title_normalized' AND is_nullable = 'NO';`,
+    );
+    assert.ok(
+      titleNormalizedNotNull.trim() === "0",
+      "title_normalized should not be made NOT NULL when migration fails",
+    );
+
+    const uniqueIndexExists = querySql(
+      databaseUrl,
+      `SELECT count(*) FROM pg_indexes WHERE tablename = 'games' AND indexname = 'games_title_normalized_uniq';`,
+    );
+    assert.ok(
+      uniqueIndexExists.trim() === "0",
+      "unique index should not be created when migration fails",
+    );
+
+    const titleCheckExists = querySql(
+      databaseUrl,
+      `SELECT count(*) FROM information_schema.table_constraints WHERE table_name = 'games' AND constraint_name = 'games_title_max_length';`,
+    );
+    assert.ok(
+      titleCheckExists.trim() === "0",
+      "title length check should not be added when migration fails",
+    );
+
+    console.log("Over-length title failure verification passed.");
+  } finally {
+    await stop();
+  }
+}
+
 async function main() {
   await verifySuccessfulUpgrade();
   await verifyConflictFailure();
+  await verifyOverLengthTitleFailure();
 }
 
 main().catch((err) => {

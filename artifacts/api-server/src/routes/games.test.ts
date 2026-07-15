@@ -322,4 +322,53 @@ describe("Games API", () => {
     assert.ok(titles.includes("List Inactive"));
     assert.ok(titles.includes("List Active"));
   });
+
+  it("never creates an account with capacities from a stale platform under concurrency", async () => {
+    // The lock winner is nondeterministic, so repeat a few times to exercise
+    // both orderings. The invariant is: after both operations complete, the
+    // account capacities must match the final committed game platform.
+    for (let i = 0; i < 5; i++) {
+      const { data: createData } = await createGame(
+        `Concurrency Race ${i}`,
+        "PS4_ONLY",
+      );
+      const game = assertGame(createData);
+
+      const accountPromise = createAccountForGame(
+        baseUrl,
+        game.id,
+        `concurrency-${i}@example.com`,
+      );
+      const updatePromise = updateGame(game.id, { platform: "PS5_ONLY" });
+
+      const [accountResult, updateResult] = await Promise.all([
+        accountPromise,
+        updatePromise,
+      ]);
+
+      const getRes = await fetch(`${baseUrl}/games/${game.id}`);
+      const finalGame = (await getRes.json()) as GameResponse;
+
+      const capsRes = await fetch(`${baseUrl}/accounts/${accountResult.account.id}`);
+      const capsData = (await capsRes.json()) as {
+        capacities: { capacityKind: string }[];
+      };
+      const kinds = new Set(capsData.capacities.map((c) => c.capacityKind));
+
+      if (updateResult.res.status === 200) {
+        // Game update won the lock. Account creation must have observed the new
+        // PS5_ONLY platform and created PS5 capacities.
+        assert.strictEqual(finalGame.game.platform, "PS5_ONLY");
+        assert.ok(kinds.has("Z2_PS5"), "expected PS5 capacities");
+        assert.ok(!kinds.has("Z2_PS4"), "did not expect PS4 capacities");
+      } else {
+        // Account creation won the lock. Game platform change must have been
+        // blocked by the account history, leaving PS4 capacities in place.
+        assert.strictEqual(updateResult.res.status, 409);
+        assert.strictEqual(finalGame.game.platform, "PS4_ONLY");
+        assert.ok(kinds.has("Z2_PS4"), "expected PS4 capacities");
+        assert.ok(!kinds.has("Z2_PS5"), "did not expect PS5 capacities");
+      }
+    }
+  });
 });

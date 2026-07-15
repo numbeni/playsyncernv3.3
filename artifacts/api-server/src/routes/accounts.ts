@@ -18,6 +18,7 @@ import { logger } from "../lib/logger";
 import { p } from "../lib/req-param";
 import { toSafeAccount } from "../lib/dto";
 import { requireUuidParam } from "../lib/validate-uuid";
+import { HttpError } from "../middlewares/error-handler";
 
 const router: IRouter = Router();
 
@@ -49,26 +50,6 @@ const UpdateAccountBody = z.object({
   birthDate: z.string().nullable().optional(),
   status: z.enum(["active", "disabled"]).optional(),
 });
-
-// ── Helpers ──────────────────────────────────────────────────────────────────
-
-async function nextAccountCode(): Promise<string> {
-  // TODO: replace with a PostgreSQL sequence to eliminate the race window under load.
-  const [row] = await db
-    .select({ max: drizzleMax(accountsTable.accountCode) })
-    .from(accountsTable);
-  const n = row?.max ? parseInt(row.max.replace("ACC-", ""), 10) + 1 : 1;
-  return `ACC-${String(n).padStart(6, "0")}`;
-}
-
-async function nextSeqForGame(gameId: string): Promise<number> {
-  // TODO: replace with a per-game PostgreSQL sequence under load.
-  const [row] = await db
-    .select({ max: drizzleMax(accountsTable.accountNumberSeq) })
-    .from(accountsTable)
-    .where(eq(accountsTable.gameId, gameId));
-  return (row?.max ?? 0) + 1;
-}
 
 // ── Routes ───────────────────────────────────────────────────────────────────
 
@@ -135,31 +116,45 @@ router.post("/games/:gameId/accounts", async (req: Request, res: Response) => {
 
   const gameId = p(req.params["gameId"]);
 
-  const [game] = await db
-    .select()
-    .from(gamesTable)
-    .where(eq(gamesTable.id, gameId))
-    .limit(1);
-
-  if (!game || game.deletedAt) {
-    res.status(404).json({ error: "Game not found" });
-    return;
-  }
-
   try {
-    const [accountCode, seq] = await Promise.all([
-      nextAccountCode(),
-      nextSeqForGame(gameId),
-    ]);
-
-    const prefix = normalizeAccountNumberPrefix(
-      parsed.data.accountNumberPrefix ?? "",
-      game.title,
-    );
-    const displayNumber = buildDisplayNumber(prefix, seq);
-
-    // All inserts in a single transaction — partial failures leave no orphans.
+    // Open the transaction before reading the Game, then lock the Game row and
+    // create the Account + Capacities using the platform from that locked row.
+    // This serializes with the platform-change guard in PATCH /games/:id so the
+    // Account is never created with Capacity definitions from a stale platform.
     const { account, capacities } = await db.transaction(async (tx) => {
+      const [game] = await tx
+        .select()
+        .from(gamesTable)
+        .where(eq(gamesTable.id, gameId))
+        .for("update")
+        .limit(1);
+
+      if (!game || game.deletedAt) {
+        throw new HttpError(404, "Game not found");
+      }
+
+      // Generate the next account code and per-game sequence inside the same
+      // transaction so the whole operation is serialized under the Game lock.
+      const [accountCodeRow] = await tx
+        .select({ max: drizzleMax(accountsTable.accountCode) })
+        .from(accountsTable);
+      const n = accountCodeRow?.max
+        ? parseInt(accountCodeRow.max.replace("ACC-", ""), 10) + 1
+        : 1;
+      const accountCode = `ACC-${String(n).padStart(6, "0")}`;
+
+      const [seqRow] = await tx
+        .select({ max: drizzleMax(accountsTable.accountNumberSeq) })
+        .from(accountsTable)
+        .where(eq(accountsTable.gameId, gameId));
+      const seq = (seqRow?.max ?? 0) + 1;
+
+      const prefix = normalizeAccountNumberPrefix(
+        parsed.data.accountNumberPrefix ?? "",
+        game.title,
+      );
+      const displayNumber = buildDisplayNumber(prefix, seq);
+
       const [account] = await tx
         .insert(accountsTable)
         .values({
@@ -205,6 +200,10 @@ router.post("/games/:gameId/accounts", async (req: Request, res: Response) => {
 
     res.status(201).json({ account: toSafeAccount(account), capacities });
   } catch (err: unknown) {
+    if (err instanceof HttpError) {
+      res.status(err.statusCode).json({ error: err.message });
+      return;
+    }
     if (
       typeof err === "object" && err !== null && "code" in err &&
       (err as { code: string }).code === "23505"
