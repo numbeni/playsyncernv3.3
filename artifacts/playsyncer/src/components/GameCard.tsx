@@ -1,16 +1,22 @@
 import { Link } from "react-router-dom";
-import { ArrowRight, Gamepad2 } from "lucide-react";
+import { ArrowRight, Gamepad2, Pencil, Power } from "lucide-react";
 import type { Game } from "@/domain/games/types";
 import { platformLabel } from "@/domain/games/platform";
 import { cn } from "@/lib/utils";
 
+const FALLBACK_COVER =
+  "https://images.unsplash.com/photo-1511512578047-dfb367046420?w=800&auto=format&fit=crop";
+
 interface Props {
   game: Game;
+  onEdit?: (game: Game) => void;
+  onToggleStatus?: (game: Game) => void;
 }
 
-export function GameCard({ game }: Props) {
+export function GameCard({ game, onEdit, onToggleStatus }: Props) {
   const isPs5Only = game.platform === "PS5_ONLY";
   const isActive = game.status === "ACTIVE";
+  const coverUrl = game.coverUrl || FALLBACK_COVER;
 
   return (
     <div
@@ -22,7 +28,7 @@ export function GameCard({ game }: Props) {
       {/* Cover image — clickable, navigates to game detail */}
       <Link to={`/games/${game.id}`} className="relative aspect-[16/10] overflow-hidden bg-muted block">
         <img
-          src={game.coverUrl}
+          src={coverUrl}
           alt={game.title}
           loading="lazy"
           className={cn(
@@ -72,7 +78,7 @@ export function GameCard({ game }: Props) {
         <h3 className="truncate text-base font-bold">{game.title}</h3>
       </div>
 
-      {/* Stats row — Stage B: only backend accountCount is shown. */}
+      {/* Stats row — Stage C1: only backend accountCount is shown. */}
       <div className="grid grid-cols-1 gap-2 p-4 border-b border-border">
         <Stat label="اکانت‌ها" value={game.accountCount} />
       </div>
@@ -87,6 +93,31 @@ export function GameCard({ game }: Props) {
           <span>اکانت‌ها</span>
           <ArrowRight className="h-4 w-4 transition-transform group-hover/btn:translate-x-1" />
         </Link>
+
+        {/* Edit */}
+        <button
+          type="button"
+          onClick={() => onEdit?.(game)}
+          className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-border bg-card text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+          aria-label="ویرایش بازی"
+        >
+          <Pencil className="h-4 w-4" />
+        </button>
+
+        {/* Toggle status */}
+        <button
+          type="button"
+          onClick={() => onToggleStatus?.(game)}
+          className={cn(
+            "grid h-10 w-10 shrink-0 place-items-center rounded-xl border text-muted-foreground hover:text-foreground transition-colors",
+            isActive
+              ? "border-warning/30 bg-warning/10 hover:bg-warning/20"
+              : "border-success/30 bg-success/10 hover:bg-success/20",
+          )}
+          aria-label={isActive ? "غیرفعال کردن بازی" : "فعال کردن بازی"}
+        >
+          <Power className={cn("h-4 w-4", isActive ? "text-warning" : "text-success")} />
+        </button>
       </div>
     </div>
   );

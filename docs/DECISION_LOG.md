@@ -61,3 +61,13 @@ No PlaySyncer product rule was changed by this phase transition.
   - `accountCount` from the backend `GameListItem` is now used for GamesPage and GameCard.
   - Legacy mock data remains in `src/mocks/playSyncerMockData.ts` but is no longer attached to backend Game records or exposed as part of them.
   - Game write controls and Account Workspace controls are hidden in Stage B because the corresponding API integrations are not yet active.
+
+## 2026-07-15 — PS-02B Stage C1
+
+- Stage C1 authorizes Create, Edit and Status writes through the existing Games API (`POST /api/games` and `PATCH /api/games/:id`).
+- Delete Game remains outside this stage and is not implemented.
+- No migration, schema change, or direct SQL is authorized.
+- Account, Capacity and Order integration remain out of scope.
+- Synthetic Stage C1 test Game: `bea1fcbe-137f-4221-b877-1d71c2a64b88` (title: `PS02B C1 Test Edited 2026-07-15T15:17:31Z`).
+- Validation performed: typecheck, production build, backend tests, API create/edit/status calls, duplicate-title rejection, platform change with zero accounts, and browser console verification.
+- Known limitations: Account Workspace remains pending; Delete is not implemented; SmartSearch only searches games.

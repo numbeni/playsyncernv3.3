@@ -1,12 +1,19 @@
 import { useEffect, useMemo, useState } from "react";
-import { RefreshCw, AlertCircle, Loader2 } from "lucide-react";
+import { RefreshCw, AlertCircle, Loader2, Plus } from "lucide-react";
 import { SmartSearch } from "@/components/SmartSearch";
 import { GameCard } from "@/components/GameCard";
+import { GameFormModal } from "@/components/GameFormModal";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { useGames } from "@/hooks/useGames";
+import type { Game } from "@/domain/games/types";
 
 export default function GamesPage() {
-  const { games, isLoading, isError, error, refetch } = useGames();
+  const { games, isLoading, isError, error, refetch, mutations } = useGames();
   const [query, setQuery] = useState("");
+  const [formOpen, setFormOpen] = useState(false);
+  const [formMode, setFormMode] = useState<"add" | "edit">("add");
+  const [editingGame, setEditingGame] = useState<Game | undefined>(undefined);
+  const [confirmGame, setConfirmGame] = useState<Game | null>(null);
 
   useEffect(() => {
     document.title = "بازی‌ها — PlaySyncer";
@@ -31,6 +38,36 @@ export default function GamesPage() {
     );
   }, [games]);
 
+  const openAdd = () => {
+    setFormMode("add");
+    setEditingGame(undefined);
+    setFormOpen(true);
+  };
+
+  const openEdit = (game: Game) => {
+    setFormMode("edit");
+    setEditingGame(game);
+    setFormOpen(true);
+  };
+
+  const openStatusConfirm = (game: Game) => {
+    setConfirmGame(game);
+  };
+
+  const handleSave = async (data: Parameters<typeof mutations.addGame>[0]) => {
+    if (formMode === "add") {
+      await mutations.addGame(data);
+    } else if (editingGame) {
+      await mutations.editGame(editingGame.id, data);
+    }
+  };
+
+  const handleConfirmStatus = async () => {
+    if (!confirmGame) return;
+    await mutations.toggleGameStatus(confirmGame.id);
+    setConfirmGame(null);
+  };
+
   return (
     <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-10 lg:py-10">
       <header className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-4">
@@ -43,6 +80,15 @@ export default function GamesPage() {
             مدیریت بازی‌ها و اکانت‌های PlayStation
           </p>
         </div>
+
+        <button
+          onClick={openAdd}
+          className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground shadow-soft hover:shadow-glow transition-all"
+        >
+          <Plus className="h-4 w-4" />
+          <span className="hidden sm:inline">افزودن بازی</span>
+          <span className="sm:hidden">بازی جدید</span>
+        </button>
       </header>
 
       {/* SmartSearch — top of content, above stats */}
@@ -50,7 +96,7 @@ export default function GamesPage() {
         <SmartSearch onGameFilter={setQuery} games={games} />
       </section>
 
-      {/* Overview stats — only backend-backed metrics in Stage B. */}
+      {/* Overview stats — only backend-backed metrics in Stage C1. */}
       <section className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-2">
         <OverviewStat label="کل بازی‌ها" value={totals.games} accent="primary" />
         <OverviewStat label="کل اکانت‌ها" value={totals.accounts} />
@@ -67,11 +113,38 @@ export default function GamesPage() {
         ) : (
           <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
             {filtered.map((g) => (
-              <GameCard key={g.id} game={g} />
+              <GameCard
+                key={g.id}
+                game={g}
+                onEdit={openEdit}
+                onToggleStatus={openStatusConfirm}
+              />
             ))}
           </div>
         )}
       </section>
+
+      <GameFormModal
+        open={formOpen}
+        mode={formMode}
+        initial={editingGame}
+        onSave={handleSave}
+        onClose={() => setFormOpen(false)}
+      />
+
+      <ConfirmDialog
+        open={confirmGame !== null}
+        title={confirmGame?.status === "ACTIVE" ? "غیرفعال کردن بازی" : "فعال کردن بازی"}
+        description={
+          confirmGame?.status === "ACTIVE"
+            ? `آیا از غیرفعال کردن بازی «${confirmGame?.title}» مطمئن هستید؟ این بازی همچنان در لیست باقی می‌ماند.`
+            : `آیا از فعال کردن بازی «${confirmGame?.title}» مطمئن هستید؟`
+        }
+        confirmLabel={confirmGame?.status === "ACTIVE" ? "غیرفعال کردن" : "فعال کردن"}
+        confirmVariant={confirmGame?.status === "ACTIVE" ? "danger" : "warning"}
+        onConfirm={handleConfirmStatus}
+        onCancel={() => setConfirmGame(null)}
+      />
     </div>
   );
 }
@@ -136,7 +209,7 @@ function EmptyState({ hasQuery, query }: { hasQuery: boolean; query: string }) {
       <p className="text-sm text-muted-foreground">
         {hasQuery
           ? `بازی‌ای با «${query}» پیدا نشد.`
-          : "هیچ بازی‌ای وجود ندارد. اولین بازی در مرحله بعدی (C) اضافه خواهد شد."}
+          : "هیچ بازی‌ای وجود ندارد. برای افزودن بازی جدید از دکمه بالا استفاده کنید."}
       </p>
     </div>
   );

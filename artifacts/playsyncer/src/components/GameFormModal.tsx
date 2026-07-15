@@ -1,34 +1,25 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { X, Gamepad2, Image as ImageIcon, Lock } from "lucide-react";
+import { X, Gamepad2, Image as ImageIcon, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { Game, GameStatus, Platform } from "@/domain/games/types";
-
-const PLACEHOLDER_COVER =
-  "https://images.unsplash.com/photo-1511512578047-dfb367046420?w=800&auto=format&fit=crop";
-
-export interface GameFormData {
-  title: string;
-  coverUrl: string;
-  platform: Platform;
-  status: GameStatus;
-}
+import type { Game } from "@/domain/games/types";
+import type { GameFormData } from "@/hooks/useGames";
 
 interface Props {
   open: boolean;
   mode: "add" | "edit";
   initial?: Game;
-  onSave: (data: GameFormData) => void;
+  onSave: (data: GameFormData) => Promise<void>;
   onClose: () => void;
 }
 
-const PLATFORMS: { value: Platform; label: string; desc: string }[] = [
+const PLATFORMS: { value: GameFormData["platform"]; label: string; desc: string }[] = [
   { value: "PS5_ONLY", label: "PS5 Only", desc: "فقط برای PlayStation 5" },
   { value: "PS4_AND_PS5", label: "PS4 + PS5", desc: "پشتیبانی از هر دو نسل" },
   { value: "PS4_ONLY", label: "PS4 Only", desc: "فقط برای PlayStation 4" },
 ];
 
-const STATUSES: { value: GameStatus; label: string }[] = [
+const STATUSES: { value: GameFormData["status"]; label: string }[] = [
   { value: "ACTIVE", label: "فعال" },
   { value: "INACTIVE", label: "غیرفعال" },
 ];
@@ -39,16 +30,20 @@ const CLOSE_ANIMATION_MS = 260;
 export function GameFormModal({ open, mode, initial, onSave, onClose }: Props) {
   const [title, setTitle] = useState("");
   const [coverUrl, setCoverUrl] = useState("");
-  const [platform, setPlatform] = useState<Platform>("PS5_ONLY");
-  const [status, setStatus] = useState<GameStatus>("ACTIVE");
+  const [platform, setPlatform] = useState<GameFormData["platform"]>("PS5_ONLY");
+  const [status, setStatus] = useState<GameFormData["status"]>("ACTIVE");
   const [errors, setErrors] = useState<
     Partial<Record<"title" | "platform", string>>
   >({});
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const [entered, setEntered] = useState(false);
   const titleRef = useRef<HTMLInputElement>(null);
   const previousBodyOverflow = useRef<string>("");
   const closeTimerRef = useRef<number | null>(null);
   const rafRef = useRef<number | null>(null);
+
+  const platformLocked = mode === "edit" && (initial?.accountCount ?? 0) > 0;
 
   const clearAnimationHandles = () => {
     if (closeTimerRef.current !== null) {
@@ -77,10 +72,12 @@ export function GameFormModal({ open, mode, initial, onSave, onClose }: Props) {
 
     clearAnimationHandles();
     setEntered(false);
+    setIsSubmitting(false);
+    setSubmitError(null);
 
     if (mode === "edit" && initial) {
       setTitle(initial.title);
-      setCoverUrl(initial.coverUrl === PLACEHOLDER_COVER ? "" : initial.coverUrl);
+      setCoverUrl(initial.coverUrl ?? "");
       setPlatform(initial.platform);
       setStatus(initial.status);
     } else {
@@ -143,16 +140,27 @@ export function GameFormModal({ open, mode, initial, onSave, onClose }: Props) {
     return Object.keys(errs).length === 0;
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!validate()) return;
+    if (!validate() || isSubmitting) return;
 
-    onSave({
-      title: title.trim(),
-      coverUrl: coverUrl.trim() || PLACEHOLDER_COVER,
-      platform,
-      status,
-    });
+    setIsSubmitting(true);
+    setSubmitError(null);
+
+    try {
+      await onSave({
+        title: title.trim(),
+        coverUrl: coverUrl.trim(),
+        platform,
+        status,
+      });
+      requestClose();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "عملیات با خطا مواجه شد";
+      setSubmitError(message);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const modal = (
@@ -167,7 +175,7 @@ export function GameFormModal({ open, mode, initial, onSave, onClose }: Props) {
           "absolute inset-0 bg-background/80 backdrop-blur-sm transition-opacity duration-300 ease-out",
           entered ? "opacity-100" : "opacity-0",
         )}
-        onClick={requestClose}
+        onClick={isSubmitting ? undefined : requestClose}
       />
 
       <div
@@ -206,8 +214,9 @@ export function GameFormModal({ open, mode, initial, onSave, onClose }: Props) {
 
           <button
             type="button"
-            onClick={requestClose}
-            className="grid h-9 w-9 shrink-0 place-items-center rounded-xl text-muted-foreground hover:bg-accent transition-colors"
+            onClick={isSubmitting ? undefined : requestClose}
+            disabled={isSubmitting}
+            className="grid h-9 w-9 shrink-0 place-items-center rounded-xl text-muted-foreground hover:bg-accent transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             aria-label="بستن"
           >
             <X className="h-4 w-4" />
@@ -230,9 +239,10 @@ export function GameFormModal({ open, mode, initial, onSave, onClose }: Props) {
                   if (errors.title)
                     setErrors((prev) => ({ ...prev, title: undefined }));
                 }}
+                disabled={isSubmitting}
                 placeholder="مثال: GTA VI"
                 className={cn(
-                  "w-full rounded-xl border bg-muted/40 px-4 py-3 text-sm outline-none placeholder:text-muted-foreground/60 transition-all focus:ring-2 focus:ring-ring/30 sm:py-2.5",
+                  "w-full rounded-xl border bg-muted/40 px-4 py-3 text-sm outline-none placeholder:text-muted-foreground/60 transition-all focus:ring-2 focus:ring-ring/30 sm:py-2.5 disabled:opacity-60",
                   errors.title
                     ? "border-destructive focus:ring-destructive/30"
                     : "border-border focus:border-primary/60",
@@ -242,7 +252,7 @@ export function GameFormModal({ open, mode, initial, onSave, onClose }: Props) {
 
             <Field
               label="آدرس تصویر (اختیاری)"
-              hint="در صورت خالی بودن، تصویر پیش‌فرض استفاده می‌شود"
+              hint="در صورت خالی بودن، تصویر پیش‌فرض نمایش داده می‌شود، اما در پایگاه داده ذخیره نمی‌شود"
             >
               <div className="relative">
                 <ImageIcon className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground pointer-events-none" />
@@ -250,9 +260,10 @@ export function GameFormModal({ open, mode, initial, onSave, onClose }: Props) {
                   type="url"
                   value={coverUrl}
                   onChange={(e) => setCoverUrl(e.target.value)}
+                  disabled={isSubmitting}
                   placeholder="https://…"
                   dir="ltr"
-                  className="w-full rounded-xl border border-border bg-muted/40 py-3 pr-10 pl-4 text-sm outline-none placeholder:text-muted-foreground/60 transition-all focus:border-primary/60 focus:ring-2 focus:ring-ring/30 sm:py-2.5"
+                  className="w-full rounded-xl border border-border bg-muted/40 py-3 pr-10 pl-4 text-sm outline-none placeholder:text-muted-foreground/60 transition-all focus:border-primary/60 focus:ring-2 focus:ring-ring/30 sm:py-2.5 disabled:opacity-60"
                 />
               </div>
 
@@ -269,11 +280,17 @@ export function GameFormModal({ open, mode, initial, onSave, onClose }: Props) {
             </Field>
 
             <Field label="پلتفرم" required error={errors.platform}>
+              {platformLocked && (
+                <p className="mb-2 rounded-xl border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">
+                  پس از ثبت اکانت، امکان تغییر پلتفرم وجود ندارد.
+                </p>
+              )}
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                 {PLATFORMS.map((p) => (
                   <button
                     key={p.value}
                     type="button"
+                    disabled={isSubmitting || platformLocked}
                     onClick={() => {
                       setPlatform(p.value);
                       if (errors.platform)
@@ -283,7 +300,7 @@ export function GameFormModal({ open, mode, initial, onSave, onClose }: Props) {
                         }));
                     }}
                     className={cn(
-                      "rounded-xl border p-3 text-right transition-all",
+                      "rounded-xl border p-3 text-right transition-all disabled:opacity-60 disabled:cursor-not-allowed",
                       platform === p.value
                         ? "border-primary bg-primary/10 shadow-glow"
                         : "border-border bg-muted/40 hover:border-primary/40",
@@ -304,9 +321,10 @@ export function GameFormModal({ open, mode, initial, onSave, onClose }: Props) {
                   <button
                     key={s.value}
                     type="button"
+                    disabled={isSubmitting}
                     onClick={() => setStatus(s.value)}
                     className={cn(
-                      "rounded-xl border py-3 text-center text-sm font-medium transition-all sm:py-2",
+                      "rounded-xl border py-3 text-center text-sm font-medium transition-all sm:py-2 disabled:opacity-60 disabled:cursor-not-allowed",
                       status === s.value
                         ? s.value === "ACTIVE"
                           ? "border-success bg-success/10 text-success"
@@ -319,6 +337,12 @@ export function GameFormModal({ open, mode, initial, onSave, onClose }: Props) {
                 ))}
               </div>
             </Field>
+
+            {submitError && (
+              <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
+                {submitError}
+              </div>
+            )}
           </div>
 
           <div
@@ -330,18 +354,19 @@ export function GameFormModal({ open, mode, initial, onSave, onClose }: Props) {
           >
             <button
               type="button"
-              onClick={requestClose}
-              className="inline-flex items-center justify-center rounded-xl border border-border bg-card px-4 py-3 text-sm font-medium text-foreground hover:bg-accent transition-colors sm:py-2"
+              onClick={isSubmitting ? undefined : requestClose}
+              disabled={isSubmitting}
+              className="inline-flex items-center justify-center rounded-xl border border-border bg-card px-4 py-3 text-sm font-medium text-foreground hover:bg-accent transition-colors disabled:opacity-50 disabled:cursor-not-allowed sm:py-2"
             >
               انصراف
             </button>
 
             <button
               type="submit"
-              disabled
-              className="inline-flex items-center justify-center gap-2 rounded-xl bg-muted px-4 py-3 text-sm font-semibold text-muted-foreground cursor-not-allowed sm:px-5 sm:py-2"
+              disabled={isSubmitting}
+              className="inline-flex items-center justify-center gap-2 rounded-xl bg-primary px-4 py-3 text-sm font-semibold text-primary-foreground shadow-soft transition-all hover:shadow-glow disabled:opacity-60 disabled:cursor-not-allowed sm:px-5 sm:py-2"
             >
-              <Lock className="h-4 w-4" />
+              {isSubmitting && <Loader2 className="h-4 w-4 animate-spin" />}
               {mode === "add" ? "افزودن بازی" : "ذخیره تغییرات"}
             </button>
           </div>

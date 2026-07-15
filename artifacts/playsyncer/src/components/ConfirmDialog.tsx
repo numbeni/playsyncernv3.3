@@ -1,5 +1,5 @@
-import { useEffect } from "react";
-import { AlertTriangle } from "lucide-react";
+import { useEffect, useState } from "react";
+import { AlertTriangle, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface Props {
@@ -8,7 +8,7 @@ interface Props {
   description: string;
   confirmLabel?: string;
   confirmVariant?: "danger" | "warning";
-  onConfirm: () => void;
+  onConfirm: () => void | Promise<void>;
   onCancel: () => void;
 }
 
@@ -21,24 +21,45 @@ export function ConfirmDialog({
   onConfirm,
   onCancel,
 }: Props) {
+  const [isPending, setIsPending] = useState(false);
+
   // Close on Escape
   useEffect(() => {
     if (!open) return;
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onCancel();
+      if (e.key === "Escape" && !isPending) onCancel();
     };
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
-  }, [open, onCancel]);
+  }, [open, onCancel, isPending]);
 
   // Lock body scroll; overlay itself is scrollable
   useEffect(() => {
     if (open) document.body.style.overflow = "hidden";
     else document.body.style.overflow = "";
-    return () => { document.body.style.overflow = ""; };
+    return () => {
+      document.body.style.overflow = "";
+    };
+  }, [open]);
+
+  // Reset pending state when dialog opens
+  useEffect(() => {
+    if (open) setIsPending(false);
   }, [open]);
 
   if (!open) return null;
+
+  const handleConfirm = async () => {
+    if (isPending) return;
+    setIsPending(true);
+    try {
+      await onConfirm();
+    } catch {
+      // Errors are handled by the caller; keep the dialog open so the user sees the result
+    } finally {
+      setIsPending(false);
+    }
+  };
 
   return (
     /* Scrollable overlay — same pattern as GameFormModal */
@@ -51,7 +72,7 @@ export function ConfirmDialog({
       {/* Backdrop — fixed so it doesn't scroll */}
       <div
         className="fixed inset-0 bg-background/70 backdrop-blur-sm"
-        onClick={onCancel}
+        onClick={isPending ? undefined : onCancel}
       />
 
       {/* Centering wrapper — single source of padding so the math matches max-h.
@@ -81,20 +102,23 @@ export function ConfirmDialog({
 
           <div className="mt-6 flex items-center justify-end gap-2.5">
             <button
-              onClick={onCancel}
-              className="inline-flex items-center justify-center rounded-xl border border-border bg-card px-4 py-2 text-sm font-medium text-foreground hover:bg-accent transition-colors"
+              onClick={isPending ? undefined : onCancel}
+              disabled={isPending}
+              className="inline-flex items-center justify-center rounded-xl border border-border bg-card px-4 py-2 text-sm font-medium text-foreground hover:bg-accent transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               انصراف
             </button>
             <button
-              onClick={onConfirm}
+              onClick={handleConfirm}
+              disabled={isPending}
               className={cn(
-                "inline-flex items-center justify-center rounded-xl px-4 py-2 text-sm font-semibold text-white shadow-soft transition-all",
+                "inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold text-white shadow-soft transition-all disabled:opacity-60 disabled:cursor-not-allowed",
                 confirmVariant === "danger"
                   ? "bg-destructive hover:bg-destructive/90"
                   : "bg-warning hover:bg-warning/90",
               )}
             >
+              {isPending && <Loader2 className="h-4 w-4 animate-spin" />}
               {confirmLabel}
             </button>
           </div>

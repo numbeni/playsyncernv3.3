@@ -6,9 +6,11 @@ PS-02B — Games Frontend API Integration and Mock Authority Removal
 
 ## Status
 
-STAGE_B_FIX1_READY_FOR_REVIEW
+STAGE_C1_READY_FOR_REVIEW
 
-Stage B Fix1 has been applied. Source files may be reviewed. No further source changes are authorized until this fix is accepted.
+Baseline SHA-256: fa294680fa18e84c7522acfbe10e6d257c4df40b1cdeda09e857830acd618a2d
+
+Stage C1: Create, Edit and Status API integration for Games. All required mutations are connected and validated.
 
 ## Baseline
 

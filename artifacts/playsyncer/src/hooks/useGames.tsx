@@ -5,25 +5,38 @@ import {
   useMemo,
   type ReactNode,
 } from "react";
-import { useListGames } from "@workspace/api-client-react";
+import { useQueryClient } from "@tanstack/react-query";
+import {
+  useListGames,
+  useCreateGame,
+  useUpdateGame,
+  getListGamesQueryKey,
+} from "@workspace/api-client-react";
 import type { Game, GameStatus, Platform } from "@/domain/games/types";
 import type { AccountInput } from "@/domain/accounts/types";
 import type { CustomerInput } from "@/domain/slots/types";
+import { formatApiError } from "@/lib/apiErrors";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
+export interface GameFormData {
+  title: string;
+  coverUrl: string;
+  platform: Platform;
+  status: GameStatus;
+}
+
 export interface GameMutations {
-  /** Stage B: no-op. Real create/edit will be wired in Stage C. */
-  addGame: (data: { title: string; coverUrl: string; platform: Platform; status: GameStatus }) => void;
-  editGame: (id: string, data: { title: string; coverUrl: string; platform: Platform; status: GameStatus }) => void;
-  toggleGameStatus: (id: string) => void;
+  addGame: (data: GameFormData) => Promise<void>;
+  editGame: (id: string, data: GameFormData) => Promise<void>;
+  toggleGameStatus: (id: string) => Promise<void>;
   deleteGame: (id: string) => void;
 }
 
 export interface AccountMutations {
-  /** Stage B: no-op. Account integration is out of scope. */
+  /** Stage C1: Account integration remains out of scope. */
   addAccount: (gameId: string, data: AccountInput) => void;
   editAccount: (gameId: string, accountId: string, data: AccountInput) => void;
   toggleAccountStatus: (gameId: string, accountId: string) => void;
@@ -31,7 +44,7 @@ export interface AccountMutations {
 }
 
 export interface CapacityMutations {
-  /** Stage B: no-op. Capacity integration is out of scope. */
+  /** Stage C1: Capacity integration remains out of scope. */
   addCapacityCustomer: (gameId: string, accountId: string, slotId: string, data: CustomerInput) => void;
   editCapacityCustomer: (gameId: string, accountId: string, slotId: string, customerId: string, data: CustomerInput) => void;
   removeCapacityCustomer: (gameId: string, accountId: string, slotId: string, customerId: string) => void;
@@ -55,6 +68,7 @@ const GamesContext = createContext<GamesContextValue | null>(null);
 // ---------------------------------------------------------------------------
 
 export function GamesProvider({ children }: { children: ReactNode }) {
+  const queryClient = useQueryClient();
   const { data, isLoading, isError, error, refetch } = useListGames();
 
   const games = useMemo<Game[]>(() => {
@@ -66,24 +80,94 @@ export function GamesProvider({ children }: { children: ReactNode }) {
     }));
   }, [data]);
 
-  // Stage B: all Game write operations are disabled. No local-only mutation.
-  const noOp = useCallback(() => {}, []);
+  const createGame = useCreateGame({
+    mutation: {
+      onSuccess: () => {
+        queryClient.invalidateQueries({ queryKey: getListGamesQueryKey() });
+      },
+    },
+  });
 
-  const addGame: GameMutations["addGame"] = noOp;
-  const editGame: GameMutations["editGame"] = noOp;
-  const toggleGameStatus: GameMutations["toggleGameStatus"] = noOp;
-  const deleteGame: GameMutations["deleteGame"] = noOp;
+  const updateGame = useUpdateGame({
+    mutation: {
+      onSuccess: () => {
+        queryClient.invalidateQueries({ queryKey: getListGamesQueryKey() });
+      },
+    },
+  });
 
-  // Stage B: Account/Capacity mutations are disabled. They are retained in the
-  // context shape only to avoid breaking the contract for other consumers.
-  const addAccount: AccountMutations["addAccount"] = noOp;
-  const editAccount: AccountMutations["editAccount"] = noOp;
-  const toggleAccountStatus: AccountMutations["toggleAccountStatus"] = noOp;
-  const deleteAccount: AccountMutations["deleteAccount"] = noOp;
+  const addGame = useCallback(
+    async (data: GameFormData) => {
+      const payload: {
+        title: string;
+        platform: Platform;
+        status: GameStatus;
+        coverUrl?: string;
+      } = {
+        title: data.title.trim(),
+        platform: data.platform,
+        status: data.status,
+      };
 
-  const addCapacityCustomer: CapacityMutations["addCapacityCustomer"] = noOp;
-  const editCapacityCustomer: CapacityMutations["editCapacityCustomer"] = noOp;
-  const removeCapacityCustomer: CapacityMutations["removeCapacityCustomer"] = noOp;
+      if (data.coverUrl.trim()) {
+        payload.coverUrl = data.coverUrl.trim();
+      }
+
+      try {
+        await createGame.mutateAsync({ data: payload });
+      } catch (err) {
+        throw new Error(formatApiError(err));
+      }
+    },
+    [createGame],
+  );
+
+  const editGame = useCallback(
+    async (id: string, data: GameFormData) => {
+      const payload = {
+        title: data.title.trim(),
+        platform: data.platform,
+        status: data.status,
+        coverUrl: data.coverUrl.trim() ? data.coverUrl.trim() : null,
+      };
+
+      try {
+        await updateGame.mutateAsync({ id, data: payload });
+      } catch (err) {
+        throw new Error(formatApiError(err));
+      }
+    },
+    [updateGame],
+  );
+
+  const toggleGameStatus = useCallback(
+    async (id: string) => {
+      const game = games.find((g) => g.id === id);
+      if (!game) return;
+
+      const nextStatus = game.status === "ACTIVE" ? "INACTIVE" : "ACTIVE";
+
+      try {
+        await updateGame.mutateAsync({ id, data: { status: nextStatus } });
+      } catch (err) {
+        throw new Error(formatApiError(err));
+      }
+    },
+    [games, updateGame],
+  );
+
+  // Stage C1: Delete remains out of scope.
+  const deleteGame = useCallback(() => {}, []);
+
+  // Stage C1: Account/Capacity mutations remain disabled.
+  const addAccount: AccountMutations["addAccount"] = useCallback(() => {}, []);
+  const editAccount: AccountMutations["editAccount"] = useCallback(() => {}, []);
+  const toggleAccountStatus: AccountMutations["toggleAccountStatus"] = useCallback(() => {}, []);
+  const deleteAccount: AccountMutations["deleteAccount"] = useCallback(() => {}, []);
+
+  const addCapacityCustomer: CapacityMutations["addCapacityCustomer"] = useCallback(() => {}, []);
+  const editCapacityCustomer: CapacityMutations["editCapacityCustomer"] = useCallback(() => {}, []);
+  const removeCapacityCustomer: CapacityMutations["removeCapacityCustomer"] = useCallback(() => {}, []);
 
   return (
     <GamesContext.Provider

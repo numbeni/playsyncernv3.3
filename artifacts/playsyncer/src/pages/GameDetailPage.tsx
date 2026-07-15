@@ -1,15 +1,22 @@
 import { Link, useParams } from "react-router-dom";
-import { useEffect } from "react";
-import { ChevronLeft, Gamepad2, Loader2, AlertCircle, RefreshCw, Users } from "lucide-react";
+import { useEffect, useState } from "react";
+import { ChevronLeft, Gamepad2, Loader2, AlertCircle, RefreshCw, Users, Pencil, Power } from "lucide-react";
 import { SmartSearch } from "@/components/SmartSearch";
+import { GameFormModal } from "@/components/GameFormModal";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { platformLabel } from "@/domain/games/platform";
 import { useGames } from "@/hooks/useGames";
 import NotFoundPage from "./NotFoundPage";
 
+const FALLBACK_COVER =
+  "https://images.unsplash.com/photo-1511512578047-dfb367046420?w=800&auto=format&fit=crop";
+
 export default function GameDetailPage() {
   const { gameId } = useParams();
-  const { games, isLoading, isError, error, refetch } = useGames();
+  const { games, isLoading, isError, error, refetch, mutations } = useGames();
   const game = games.find((g) => g.id === gameId);
+  const [formOpen, setFormOpen] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
 
   useEffect(() => {
     document.title = game ? `${game.title} — PlaySyncer` : "بازی — PlaySyncer";
@@ -45,6 +52,18 @@ export default function GameDetailPage() {
 
   if (!game) return <NotFoundPage />;
 
+  const coverUrl = game.coverUrl || FALLBACK_COVER;
+  const isActive = game.status === "ACTIVE";
+
+  const handleSave = async (data: Parameters<typeof mutations.editGame>[1]) => {
+    await mutations.editGame(game.id, data);
+  };
+
+  const handleConfirmStatus = async () => {
+    await mutations.toggleGameStatus(game.id);
+    setConfirmOpen(false);
+  };
+
   return (
     <div className="mx-auto max-w-6xl px-4 py-6 sm:px-6 lg:px-10 lg:py-10">
       <div className="mb-4 flex items-center gap-2 text-xs text-muted-foreground">
@@ -63,7 +82,7 @@ export default function GameDetailPage() {
         <div className="grid grid-cols-1 md:grid-cols-[240px_minmax(0,1fr)]">
           <div className="relative aspect-[16/10] md:aspect-auto md:h-full bg-muted">
             <img
-              src={game.coverUrl}
+              src={coverUrl}
               alt={game.title}
               className="h-full w-full object-cover"
             />
@@ -91,6 +110,25 @@ export default function GameDetailPage() {
                   مدیریت اکانت‌ها، ظرفیت‌ها و تخصیص مشتریان
                 </p>
               </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setFormOpen(true)}
+                  className="inline-flex items-center gap-2 rounded-xl border border-border bg-card px-3 py-2 text-sm font-medium text-foreground hover:bg-accent transition-colors"
+                >
+                  <Pencil className="h-4 w-4" />
+                  <span className="hidden sm:inline">ویرایش</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirmOpen(true)}
+                  className={isActive ? "inline-flex items-center gap-2 rounded-xl border border-warning/30 bg-warning/10 px-3 py-2 text-sm font-medium text-warning hover:bg-warning/20 transition-colors" : "inline-flex items-center gap-2 rounded-xl border border-success/30 bg-success/10 px-3 py-2 text-sm font-medium text-success hover:bg-success/20 transition-colors"}
+                >
+                  <Power className="h-4 w-4" />
+                  <span className="hidden sm:inline">{isActive ? "غیرفعال" : "فعال"}</span>
+                </button>
+              </div>
             </div>
 
             <div className="mt-5 grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -116,6 +154,28 @@ export default function GameDetailPage() {
           </p>
         </div>
       </section>
+
+      <GameFormModal
+        open={formOpen}
+        mode="edit"
+        initial={game}
+        onSave={handleSave}
+        onClose={() => setFormOpen(false)}
+      />
+
+      <ConfirmDialog
+        open={confirmOpen}
+        title={isActive ? "غیرفعال کردن بازی" : "فعال کردن بازی"}
+        description={
+          isActive
+            ? `آیا از غیرفعال کردن بازی «${game.title}» مطمئن هستید؟ این بازی همچنان در لیست باقی می‌ماند.`
+            : `آیا از فعال کردن بازی «${game.title}» مطمئن هستید؟`
+        }
+        confirmLabel={isActive ? "غیرفعال کردن" : "فعال کردن"}
+        confirmVariant={isActive ? "danger" : "warning"}
+        onConfirm={handleConfirmStatus}
+        onCancel={() => setConfirmOpen(false)}
+      />
     </div>
   );
 }
