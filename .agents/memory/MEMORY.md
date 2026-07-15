@@ -1,0 +1,2 @@
+- [PlaySyncer DB phase](playsyncer-db-phase.md) — schema live, CRUD routes done, key constraints and patterns to follow.
+- [Drizzle-kit & node --test quirks](drizzle-kit-and-node-test-quirks.md) — `out` must be relative or `check` breaks; native test runner needs `.ts` imports + tsconfig flags; use `isNull` for soft-delete filters; verify populated migrations with `skipMigrations` + temp `.sql` files for psql.

@@ -1,0 +1,4940 @@
+diff --git a/artifacts/api-server/src/lib/test-pg.ts b/artifacts/api-server/src/lib/test-pg.ts
+index 210b28a..8206c2e 100644
+--- a/artifacts/api-server/src/lib/test-pg.ts
++++ b/artifacts/api-server/src/lib/test-pg.ts
+@@ -19,7 +19,9 @@ export interface TestServer {
+   stop: () => Promise<void>;
+ }
+ 
+-export async function startTestPg(): Promise<TestPg> {
++export async function startTestPg(options?: {
++  skipMigrations?: boolean;
++}): Promise<TestPg> {
+   const port = await getFreePort();
+   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "playsyncer-test-pg-"));
+   const pgdata = path.join(tmpDir, "pgdata");
+@@ -41,7 +43,9 @@ export async function startTestPg(): Promise<TestPg> {
+ 
+   const databaseUrl = `postgresql://postgres@localhost/playsyncer_test?host=${socketDir}&port=${port}`;
+ 
+-  runMigrations(databaseUrl);
++  if (!options?.skipMigrations) {
++    runMigrations(databaseUrl);
++  }
+ 
+   return {
+     databaseUrl,
+diff --git a/artifacts/api-server/src/routes/games.test.ts b/artifacts/api-server/src/routes/games.test.ts
+index d69dc4c..3951066 100644
+--- a/artifacts/api-server/src/routes/games.test.ts
++++ b/artifacts/api-server/src/routes/games.test.ts
+@@ -8,6 +8,20 @@ import { startTestPg, startApiServer } from "../lib/test-pg.ts";
+ const __dirname = path.dirname(fileURLToPath(import.meta.url));
+ const DIST_DIR = path.resolve(__dirname, "..", "..", "dist");
+ 
++type GameResponse = {
++  game: {
++    id: string;
++    title: string;
++    titleNormalized: string;
++    platform: string;
++    status: string;
++  };
++};
++
++type ErrorResponse = { error: string };
++
++type GameOrError = GameResponse | ErrorResponse;
++
+ async function createAccountForGame(
+   baseUrl: string,
+   gameId: string,
+@@ -27,16 +41,27 @@ async function createAccountForGame(
+       `Failed to create account for test setup: ${res.status} ${await res.text()}`,
+     );
+   }
+-  return res.json();
++  return (await res.json()) as { account: { id: string } };
++}
++
++function runSql(databaseUrl: string, sql: string) {
++  execSync(`psql "${databaseUrl}" -c "${sql}"`, { stdio: "ignore" });
++}
++
++function assertGame(data: GameOrError): GameResponse["game"] {
++  assert.ok("game" in data, "expected game response, got error: " + ("error" in data ? data.error : ""));
++  return data.game;
+ }
+ 
+ describe("Games API", () => {
+   let baseUrl: string;
++  let databaseUrl: string;
+   let stopServer: () => Promise<void>;
+   let stopPg: () => Promise<void>;
+ 
+   before(async () => {
+-    const { databaseUrl, stop: stopPgFn } = await startTestPg();
++    const { databaseUrl: dbUrl, stop: stopPgFn } = await startTestPg();
++    databaseUrl = dbUrl;
+     stopPg = stopPgFn;
+ 
+     // Build the server so the test can run it as a subprocess. The raw
+@@ -73,18 +98,7 @@ describe("Games API", () => {
+       headers: { "Content-Type": "application/json" },
+       body: JSON.stringify(body),
+     });
+-    return {
+-      res,
+-      data: (await res.json()) as {
+-        game: {
+-          id: string;
+-          title: string;
+-          titleNormalized: string;
+-          platform: string;
+-          status: string;
+-        };
+-      },
+-    };
++    return { res, data: (await res.json()) as GameOrError };
+   }
+ 
+   async function updateGame(id: string, body: object) {
+@@ -93,31 +107,24 @@ describe("Games API", () => {
+       headers: { "Content-Type": "application/json" },
+       body: JSON.stringify(body),
+     });
+-    return {
+-      res,
+-      data: (await res.json()) as
+-        | { game: { id: string; title: string; platform: string; status: string } }
+-        | { error: string },
+-    };
++    return { res, data: (await res.json()) as GameOrError };
+   }
+ 
+   async function deleteGame(id: string) {
+     const res = await fetch(`${baseUrl}/games/${id}`, {
+       method: "DELETE",
+     });
+-    return {
+-      res,
+-      data: (await res.json()) as { ok: boolean } | { error: string },
+-    };
++    return { res, data: (await res.json()) as { ok: boolean } | ErrorResponse };
+   }
+ 
+   it("creates a game successfully", async () => {
+     const { res, data } = await createGame("FC 26", "PS5_ONLY");
+     assert.strictEqual(res.status, 201);
+-    assert.strictEqual(data.game.title, "FC 26");
+-    assert.strictEqual(data.game.titleNormalized, "fc 26");
+-    assert.strictEqual(data.game.platform, "PS5_ONLY");
+-    assert.strictEqual(data.game.status, "ACTIVE");
++    const game = assertGame(data);
++    assert.strictEqual(game.title, "FC 26");
++    assert.strictEqual(game.titleNormalized, "fc 26");
++    assert.strictEqual(game.platform, "PS5_ONLY");
++    assert.strictEqual(game.status, "ACTIVE");
+   });
+ 
+   it("rejects duplicate normalized titles", async () => {
+@@ -129,10 +136,32 @@ describe("Games API", () => {
+     assert.ok(!data.error.includes("23505"));
+   });
+ 
++  it("rejects whitespace-only titles on create", async () => {
++    const { res, data } = await createGame("   ", "PS5_ONLY");
++    assert.strictEqual(res.status, 400);
++    assert.ok("error" in data);
++  });
++
++  it("rejects whitespace-only titles on update", async () => {
++    const { data: createData } = await createGame("Whitespace Update", "PS5_ONLY");
++    const game = assertGame(createData);
++    const { res, data } = await updateGame(game.id, { title: "\t\n" });
++    assert.strictEqual(res.status, 400);
++    assert.ok("error" in data);
++  });
++
++  it("collapses repeated internal spaces in the stored title", async () => {
++    const { res, data } = await createGame("Collapse   Title", "PS5_ONLY");
++    assert.strictEqual(res.status, 201);
++    const game = assertGame(data);
++    assert.strictEqual(game.title, "Collapse Title");
++    assert.strictEqual(game.titleNormalized, "collapse title");
++  });
++
+   it("rejects invalid UUID with 400", async () => {
+     const res = await fetch(`${baseUrl}/games/not-a-uuid`);
+     assert.strictEqual(res.status, 400);
+-    const data = (await res.json()) as { error: string };
++    const data = (await res.json()) as ErrorResponse;
+     assert.ok(data.error);
+   });
+ 
+@@ -145,21 +174,61 @@ describe("Games API", () => {
+ 
+   it("allows platform change without account history", async () => {
+     const { data: createData } = await createGame("Platform Change", "PS4_ONLY");
+-    const { res, data } = await updateGame(createData.game.id, {
++    const game = assertGame(createData);
++    const { res, data } = await updateGame(game.id, {
+       platform: "PS5_ONLY",
+     });
+     assert.strictEqual(res.status, 200);
+-    assert.ok("game" in data);
+-    assert.strictEqual(data.game.platform, "PS5_ONLY");
++    const updated = assertGame(data);
++    assert.strictEqual(updated.platform, "PS5_ONLY");
+   });
+ 
+-  it("blocks platform change with account history", async () => {
++  it("blocks platform change with active account history", async () => {
+     const { data: createData } = await createGame("Platform Lock", "PS4_ONLY");
+-    const gameId = createData.game.id;
++    const game = assertGame(createData);
++
++    await createAccountForGame(baseUrl, game.id, "platform-lock@example.com");
++
++    const { res, data } = await updateGame(game.id, { platform: "PS5_ONLY" });
++    assert.strictEqual(res.status, 409);
++    assert.ok("error" in data);
++    assert.strictEqual(
++      data.error,
++      "Cannot change platform after accounts exist for this game",
++    );
++  });
++
++  it("allows same-platform update when an account exists", async () => {
++    const { data: createData } = await createGame("Same Platform", "PS4_ONLY");
++    const game = assertGame(createData);
++
++    await createAccountForGame(baseUrl, game.id, "same-platform@example.com");
+ 
+-    await createAccountForGame(baseUrl, gameId, "platform-lock@example.com");
++    const { res, data } = await updateGame(game.id, {
++      platform: "PS4_ONLY",
++      status: "INACTIVE",
++    });
++    assert.strictEqual(res.status, 200);
++    const updated = assertGame(data);
++    assert.strictEqual(updated.platform, "PS4_ONLY");
++    assert.strictEqual(updated.status, "INACTIVE");
++  });
+ 
+-    const { res, data } = await updateGame(gameId, { platform: "PS5_ONLY" });
++  it("blocks platform change with a soft-deleted account", async () => {
++    const { data: createData } = await createGame("Soft Delete Lock", "PS4_ONLY");
++    const game = assertGame(createData);
++
++    const { account } = await createAccountForGame(
++      baseUrl,
++      game.id,
++      "soft-delete-lock@example.com",
++    );
++    runSql(
++      databaseUrl,
++      `UPDATE "accounts" SET "deleted_at" = now() WHERE "id" = '${account.id}';`,
++    );
++
++    const { res, data } = await updateGame(game.id, { platform: "PS5_ONLY" });
+     assert.strictEqual(res.status, 409);
+     assert.ok("error" in data);
+     assert.strictEqual(
+@@ -170,30 +239,54 @@ describe("Games API", () => {
+ 
+   it("changes status from ACTIVE to INACTIVE", async () => {
+     const { data: createData } = await createGame("Status Change", "PS5_ONLY");
+-    const { res, data } = await updateGame(createData.game.id, {
++    const game = assertGame(createData);
++    const { res, data } = await updateGame(game.id, {
+       status: "INACTIVE",
+     });
+     assert.strictEqual(res.status, 200);
+-    assert.ok("game" in data);
+-    assert.strictEqual(data.game.status, "INACTIVE");
++    const updated = assertGame(data);
++    assert.strictEqual(updated.status, "INACTIVE");
+   });
+ 
+   it("allows hard delete without history", async () => {
+     const { data: createData } = await createGame("Delete Allowed", "PS5_ONLY");
+-    const id = createData.game.id;
+-    const { res } = await deleteGame(id);
++    const game = assertGame(createData);
++    const { res } = await deleteGame(game.id);
+     assert.strictEqual(res.status, 200);
+-    const getRes = await fetch(`${baseUrl}/games/${id}`);
++    const getRes = await fetch(`${baseUrl}/games/${game.id}`);
+     assert.strictEqual(getRes.status, 404);
+   });
+ 
+-  it("blocks hard delete with account history", async () => {
++  it("blocks hard delete with active account history", async () => {
+     const { data: createData } = await createGame("Delete Lock", "PS5_ONLY");
+-    const gameId = createData.game.id;
++    const game = assertGame(createData);
++
++    await createAccountForGame(baseUrl, game.id, "delete-lock@example.com");
++
++    const { res, data } = await deleteGame(game.id);
++    assert.strictEqual(res.status, 409);
++    assert.ok("error" in data);
++    assert.strictEqual(
++      data.error,
++      "Cannot delete game while accounts exist; mark it inactive instead",
++    );
++  });
++
++  it("blocks hard delete with a soft-deleted account", async () => {
++    const { data: createData } = await createGame("Soft Delete Delete", "PS5_ONLY");
++    const game = assertGame(createData);
+ 
+-    await createAccountForGame(baseUrl, gameId, "delete-lock@example.com");
++    const { account } = await createAccountForGame(
++      baseUrl,
++      game.id,
++      "soft-delete-delete@example.com",
++    );
++    runSql(
++      databaseUrl,
++      `UPDATE "accounts" SET "deleted_at" = now() WHERE "id" = '${account.id}';`,
++    );
+ 
+-    const { res, data } = await deleteGame(gameId);
++    const { res, data } = await deleteGame(game.id);
+     assert.strictEqual(res.status, 409);
+     assert.ok("error" in data);
+     assert.strictEqual(
+@@ -202,9 +295,24 @@ describe("Games API", () => {
+     );
+   });
+ 
++  it("enforces global normalized-title uniqueness across soft-deleted games", async () => {
++    const { data: createData } = await createGame("Global Unique", "PS5_ONLY");
++    const game = assertGame(createData);
++    runSql(
++      databaseUrl,
++      `UPDATE "games" SET "deleted_at" = now() WHERE "id" = '${game.id}';`,
++    );
++
++    const { res, data } = await createGame("Global Unique", "PS4_ONLY");
++    assert.strictEqual(res.status, 409);
++    assert.ok("error" in data);
++    assert.strictEqual(data.error, "A game with this title already exists");
++  });
++
+   it("lists all games including inactive ones", async () => {
+     const { data: g1 } = await createGame("List Inactive", "PS5_ONLY");
+-    await updateGame(g1.game.id, { status: "INACTIVE" });
++    const inactiveGame = assertGame(g1);
++    await updateGame(inactiveGame.id, { status: "INACTIVE" });
+     await createGame("List Active", "PS5_ONLY");
+ 
+     const res = await fetch(`${baseUrl}/games`);
+diff --git a/artifacts/api-server/src/routes/games.ts b/artifacts/api-server/src/routes/games.ts
+index 3c13137..d432b87 100644
+--- a/artifacts/api-server/src/routes/games.ts
++++ b/artifacts/api-server/src/routes/games.ts
+@@ -6,8 +6,13 @@ import {
+   type NextFunction,
+ } from "express";
+ import { db, gamesTable, accountsTable } from "@workspace/db";
+-import { normalizeGameTitle } from "@workspace/db/helpers";
+-import { eq, isNull, and, desc, count } from "drizzle-orm";
++import {
++  cleanGameTitle,
++  normalizeGameTitle,
++  prepareGameTitle,
++  GameTitleError,
++} from "@workspace/db/helpers";
++import { eq, desc, count, isNull } from "drizzle-orm";
+ import { z } from "zod";
+ import { p } from "../lib/req-param";
+ import { requireUuidParam } from "../lib/validate-uuid";
+@@ -20,15 +25,25 @@ router.param("id", requireUuidParam("id"));
+ 
+ // ── Validation ──────────────────────────────────────────────────────────────
+ 
++const titleSchema = z.preprocess(
++  (val) => (typeof val === "string" ? cleanGameTitle(val) : val),
++  z
++    .string()
++    .min(1, "Title is required")
++    .max(120, "Title must be at most 120 characters"),
++).refine((val) => normalizeGameTitle(val).length > 0, {
++  message: "Title cannot be whitespace-only",
++});
++
+ const CreateGameBody = z.object({
+-  title: z.string().min(1).max(120),
++  title: titleSchema,
+   coverUrl: z.string().url().optional(),
+   platform: z.enum(["PS5_ONLY", "PS4_AND_PS5", "PS4_ONLY"]),
+   status: z.enum(["ACTIVE", "INACTIVE"]).default("ACTIVE"),
+ });
+ 
+ const UpdateGameBody = z.object({
+-  title: z.string().min(1).max(120).optional(),
++  title: titleSchema.optional(),
+   coverUrl: z.string().url().nullable().optional(),
+   platform: z.enum(["PS5_ONLY", "PS4_AND_PS5", "PS4_ONLY"]).optional(),
+   status: z.enum(["ACTIVE", "INACTIVE"]).optional(),
+@@ -57,7 +72,7 @@ async function hasAccountHistory(gameId: string): Promise<boolean> {
+   const rows = await db
+     .select({ count: count(accountsTable.id) })
+     .from(accountsTable)
+-    .where(and(eq(accountsTable.gameId, gameId), isNull(accountsTable.deletedAt)))
++    .where(eq(accountsTable.gameId, gameId))
+     .limit(1);
+   return (rows[0]?.count ?? 0) > 0;
+ }
+@@ -79,6 +94,10 @@ function isDuplicateTitleError(err: unknown): boolean {
+   return false;
+ }
+ 
++function isGameTitleError(err: unknown): boolean {
++  return err instanceof GameTitleError;
++}
++
+ // ── Routes ───────────────────────────────────────────────────────────────────
+ 
+ /** GET /games — list all games with account count */
+@@ -103,10 +122,7 @@ router.get("/games", async (
+       .from(gamesTable)
+       .leftJoin(
+         accountsTable,
+-        and(
+-          eq(accountsTable.gameId, gamesTable.id),
+-          isNull(accountsTable.deletedAt),
+-        ),
++        eq(accountsTable.gameId, gamesTable.id),
+       )
+       .where(isNull(gamesTable.deletedAt))
+       .groupBy(gamesTable.id)
+@@ -140,8 +156,7 @@ router.post("/games", async (
+ ) => {
+   try {
+     const parsed = CreateGameBody.parse(req.body);
+-    const title = parsed.title.trim();
+-    const titleNormalized = normalizeGameTitle(parsed.title);
++    const { title, titleNormalized } = prepareGameTitle(parsed.title);
+ 
+     const [game] = await db
+       .insert(gamesTable)
+@@ -156,6 +171,10 @@ router.post("/games", async (
+ 
+     res.status(201).json({ game });
+   } catch (err) {
++    if (isGameTitleError(err)) {
++      next(new HttpError(400, (err as GameTitleError).message));
++      return;
++    }
+     if (isDuplicateTitleError(err)) {
+       next(new HttpError(409, "A game with this title already exists"));
+       return;
+@@ -173,9 +192,12 @@ router.patch("/games/:id", async (
+   try {
+     const id = p(req.params["id"]);
+     const parsed = UpdateGameBody.parse(req.body);
+-    await requireGame(id);
++    const currentGame = await requireGame(id);
+ 
+-    if (parsed.platform !== undefined) {
++    if (
++      parsed.platform !== undefined &&
++      parsed.platform !== currentGame.platform
++    ) {
+       if (await hasAccountHistory(id)) {
+         throw new HttpError(
+           409,
+@@ -188,8 +210,9 @@ router.patch("/games/:id", async (
+       updatedAt: new Date(),
+     };
+     if (parsed.title !== undefined) {
+-      update.title = parsed.title.trim();
+-      update.titleNormalized = normalizeGameTitle(parsed.title);
++      const { title, titleNormalized } = prepareGameTitle(parsed.title);
++      update.title = title;
++      update.titleNormalized = titleNormalized;
+     }
+     if (parsed.coverUrl !== undefined) update.coverUrl = parsed.coverUrl;
+     if (parsed.platform !== undefined) update.platform = parsed.platform;
+@@ -203,6 +226,10 @@ router.patch("/games/:id", async (
+ 
+     res.json({ game });
+   } catch (err) {
++    if (isGameTitleError(err)) {
++      next(new HttpError(400, (err as GameTitleError).message));
++      return;
++    }
+     if (isDuplicateTitleError(err)) {
+       next(new HttpError(409, "A game with this title already exists"));
+       return;
+diff --git a/attached_assets/Pasted-Start-PS-02A-Games-Contract-and-Backend-Read-and-follow_1784109476318.txt b/attached_assets/Pasted-Start-PS-02A-Games-Contract-and-Backend-Read-and-follow_1784109476318.txt
+deleted file mode 100644
+index 6ca309f..0000000
+--- a/attached_assets/Pasted-Start-PS-02A-Games-Contract-and-Backend-Read-and-follow_1784109476318.txt
++++ /dev/null
+@@ -1,335 +0,0 @@
+-Start PS-02A — Games Contract and Backend.
+-
+-Read and follow these files before modifying anything:
+-
+-- AGENTS.md
+-- docs/PRODUCT_RULES.md
+-- docs/CURRENT_PHASE.md
+-- docs/DECISION_LOG.md
+-- docs/MIGRATIONS.md
+-
+-The active baseline is the completed PS-01 repository state.
+-
+-Before implementation:
+-
+-1. Run:
+-
+-git rev-parse HEAD
+-
+-Save the result as START_HEAD.
+-
+-2. Inspect the existing:
+-
+-- Games schema and enums
+-- Games database relations
+-- Games API routes and services
+-- Accounts relation to Games
+-- Orders and Order Items relation to Games
+-- OpenAPI Games paths and schemas
+-- generated Zod/API client outputs
+-- existing migration files and Drizzle configuration
+-- existing Games tests
+-
+-Do not produce a separate long analysis report. Use the inspection to make minimal and safe implementation changes.
+-
+-## Objective
+-
+-Implement the approved Games data contract and database-backed Backend.
+-
+-Do not implement or modify the Games frontend in this phase.
+-
+-## Canonical Games contract
+-
+-Platforms must be exactly:
+-
+-- PS5_ONLY
+-- PS4_ONLY
+-- PS4_AND_PS5
+-
+-Statuses must be exactly:
+-
+-- ACTIVE
+-- INACTIVE
+-
+-The Game model must support:
+-
+-- UUID primary key
+-- title
+-- normalized title
+-- platform
+-- status
+-- existing image field if already supported
+-- created timestamp
+-- updated timestamp
+-
+-Do not redesign image storage or upload behavior.
+-
+-## Title normalization
+-
+-Implement one reusable server-side title-normalization function.
+-
+-It must:
+-
+-- trim surrounding whitespace
+-- collapse repeated internal whitespace to one space
+-- use a consistent case-insensitive representation for duplicate detection
+-
+-These values must conflict:
+-
+-- `FC 26`
+-- ` fc 26 `
+-- `FC   26`
+-
+-These values must remain distinct:
+-
+-- `FC 26`
+-- `FC 26 Ultimate Edition`
+-
+-Store the normalized value in the database.
+-
+-Add a database-level unique index or constraint for the normalized title.
+-
+-Do not rely only on frontend or route validation.
+-
+-Map duplicate-title conflicts to a controlled HTTP 409 response without exposing raw PostgreSQL errors.
+-
+-## Platform protection
+-
+-A Game platform may be changed only when no Account history exists for that Game.
+-
+-Once at least one Account references the Game:
+-
+-- title may still be edited
+-- status may still be edited
+-- platform changes must return HTTP 409
+-
+-Use the existing Account relation. Do not redesign Accounts.
+-
+-## Status behavior
+-
+-Support:
+-
+-- ACTIVE
+-- INACTIVE
+-
+-Inactive Games remain stored and retrievable through management API operations.
+-
+-Do not implement Account or Assignment blocking in this phase. That enforcement belongs to later phases.
+-
+-## Hard deletion
+-
+-Hard deletion is allowed only when the Game has no related history.
+-
+-At minimum:
+-
+-- if any Account references the Game, deletion must return HTTP 409
+-- no Account, Capacity, Order, or historical record may be cascade-deleted
+-
+-Inspect whether the current schema has a reliable direct or indirect Order-to-Game relation.
+-
+-If a safe existing relation exists, also block deletion when Order history exists.
+-
+-If no reliable Order-to-Game relation exists:
+-
+-- do not invent or redesign the Orders schema
+-- implement the Account-history protection
+-- report Order-history deletion protection as explicitly deferred to the Orders domain phase
+-
+-Do not claim that Order-history protection is implemented unless supported by the actual schema and tests.
+-
+-## Migration requirements
+-
+-Do not edit, squash, or replace the initial migration.
+-
+-Create a new versioned Drizzle migration for PS-02A.
+-
+-Do not use:
+-
+-- drizzle-kit push
+-- drizzle-kit push --force
+-- direct schema mutation against the shared Replit database
+-
+-Do not apply the migration to the current shared database.
+-
+-Verify against a clean disposable PostgreSQL database by applying:
+-
+-1. all existing migrations in order
+-2. the new PS-02A migration
+-
+-Report the exact migration result.
+-
+-## Games API
+-
+-Use the existing route conventions where reasonable.
+-
+-Implement or correct database-backed operations for:
+-
+-- list Games
+-- get one Game
+-- create Game
+-- update Game
+-- change Game status
+-- hard delete Game
+-
+-Avoid unnecessary duplicate endpoints when the existing update endpoint can safely manage title, platform, and status.
+-
+-Required HTTP behavior:
+-
+-- invalid UUID → 400
+-- invalid request body → 400
+-- missing Game → 404
+-- normalized duplicate title → 409
+-- platform change after Account history → 409
+-- prohibited hard deletion → 409
+-- unexpected failure → controlled 500
+-
+-Use the PS-01:
+-
+-- centralized error handler
+-- UUID validation utility
+-- controlled request parsing
+-
+-Do not expose database errors, stack traces, SQL, or sensitive values.
+-
+-Keep validation and normalization logic reusable rather than duplicating it across routes.
+-
+-Use transactions when an operation contains multiple dependent database actions.
+-
+-## OpenAPI and generated outputs
+-
+-Update OpenAPI only for the Games backend contract implemented in this phase.
+-
+-Regenerate the project’s existing:
+-
+-- Zod schemas
+-- API client
+-- related generated outputs
+-
+-Do not manually modify generated files when generation is available.
+-
+-Do not connect the frontend Games page to the API yet.
+-
+-## Required focused tests
+-
+-Add or update tests for at least:
+-
+-1. title normalization
+-2. duplicate normalized-title rejection
+-3. successful Game creation
+-4. invalid UUID returning 400
+-5. missing Game returning 404
+-6. platform change allowed without Account history
+-7. platform change blocked with Account history
+-8. ACTIVE to INACTIVE status change
+-9. hard deletion allowed without history
+-10. hard deletion blocked with Account history
+-11. hard deletion blocked with Order history only if the current schema safely supports this relation
+-12. duplicate conflict does not expose a raw database error
+-
+-Tests must use isolated test data or a disposable database.
+-
+-Do not modify the shared Replit database for tests.
+-
+-## Prohibited changes
+-
+-Do not modify:
+-
+-- Games frontend page
+-- Games dialogs or animations
+-- frontend runtime mock flow
+-- Accounts business implementation
+-- Capacity templates
+-- Orders business implementation
+-- Store Mapping
+-- Assignment
+-- Connector
+-- Authentication
+-- Staff
+-- RBAC
+-- Dashboard
+-- unrelated UI
+-- unrelated schemas or routes
+-
+-Do not add dependencies without explicit approval.
+-
+-Do not perform unrelated refactoring.
+-
+-Do not mark PS-02A completed in docs/CURRENT_PHASE.md.
+-
+-## Validation
+-
+-Run and report:
+-
+-- repository typecheck
+-- API typecheck
+-- API build
+-- focused Games tests
+-- OpenAPI validation
+-- generated-client/codegen verification
+-- disposable PostgreSQL full migration-chain verification
+-
+-Search the final source and confirm:
+-
+-- automatic drizzle push was not reintroduced
+-- the initial migration was not modified
+-- the Games frontend was not changed
+-- no unrelated business schema was changed
+-- no sensitive information is logged
+-
+-## Git evidence
+-
+-After implementation, record:
+-
+-git rev-parse HEAD
+-
+-Save it as END_HEAD.
+-
+-Also run:
+-
+-git status --short
+-
+-Create a phase diff even if Replit automatically commits:
+-
+-mkdir -p exports
+-git diff --binary START_HEAD..END_HEAD > exports/ps02a-games-backend.diff
+-
+-If working-tree changes remain, also create:
+-
+-git diff --binary START_HEAD > exports/ps02a-games-backend-working-tree.diff
+-
+-## Required final delivery
+-
+-Provide:
+-
+-1. short implementation summary
+-2. START_HEAD
+-3. END_HEAD
+-4. git status --short
+-5. files changed
+-6. runtime changes actually implemented
+-7. documentation-only changes
+-8. migration filename
+-9. API operations implemented
+-10. title-normalization behavior
+-11. platform-lock behavior
+-12. hard-delete behavior
+-13. Order-history enforcement status: implemented or deferred with exact reason
+-14. commands executed and exact results
+-15. disposable database migration result
+-16. shared database impact
+-17. known risks and deferred items
+-18. rollback instructions
+-19. exports/ps02a-games-backend.diff
+-20. complete updated project ZIP
+-
+-Exclude from the ZIP:
+-
+-- node_modules
+-- .git
+-- temporary PostgreSQL data
+-- build caches
+-- TypeScript build-info files
+-- previous unrelated exports
+-
+-Do not claim production readiness.
+-Do not change anything outside PS-02A.
+\ No newline at end of file
+diff --git a/exports/ps02a-games-backend.diff b/exports/ps02a-games-backend.diff
+index 090811f..f513bdf 100644
+--- a/exports/ps02a-games-backend.diff
++++ b/exports/ps02a-games-backend.diff
+@@ -1,3787 +0,0 @@
+-diff --git a/artifacts/api-server/package.json b/artifacts/api-server/package.json
+-index 068d95b..661930f 100644
+---- a/artifacts/api-server/package.json
+-+++ b/artifacts/api-server/package.json
+-@@ -8,7 +8,7 @@
+-     "build": "node ./build.mjs",
+-     "start": "node --enable-source-maps ./dist/index.mjs",
+-     "typecheck": "tsc -p tsconfig.json --noEmit",
+--    "test": "node --test src/lib/*.test.ts"
+-+    "test": "node --test src/lib/*.test.ts src/routes/*.test.ts"
+-   },
+-   "dependencies": {
+-     "@workspace/api-zod": "workspace:*",
+-diff --git a/artifacts/api-server/scripts/verify-games-migration.ts b/artifacts/api-server/scripts/verify-games-migration.ts
+-new file mode 100644
+-index 0000000..22cd660
+---- /dev/null
+-+++ b/artifacts/api-server/scripts/verify-games-migration.ts
+-@@ -0,0 +1,33 @@
+-+import { execSync } from "node:child_process";
+-+import { startTestPg } from "../src/lib/test-pg.ts";
+-+
+-+async function verify() {
+-+  const { databaseUrl, stop } = await startTestPg();
+-+  try {
+-+    const out = execSync(
+-+      `psql "${databaseUrl}" -P pager=off -c "\\d games"`,
+-+      { encoding: "utf-8" },
+-+    );
+-+    console.log(out);
+-+
+-+    const checks = [
+-+      "title_normalized",
+-+      "games_title_normalized_uniq",
+-+      "status",
+-+      "platform",
+-+    ];
+-+    for (const check of checks) {
+-+      if (!out.includes(check)) {
+-+        throw new Error(`Migration verification failed: missing ${check}`);
+-+      }
+-+    }
+-+    console.log("Migration verification passed: games table schema is correct");
+-+  } finally {
+-+    await stop();
+-+  }
+-+}
+-+
+-+verify().catch((err) => {
+-+  console.error(err);
+-+  process.exit(1);
+-+});
+-diff --git a/artifacts/api-server/src/lib/test-pg.ts b/artifacts/api-server/src/lib/test-pg.ts
+-new file mode 100644
+-index 0000000..210b28a
+---- /dev/null
+-+++ b/artifacts/api-server/src/lib/test-pg.ts
+-@@ -0,0 +1,168 @@
+-+import { spawn, execSync, execFileSync } from "node:child_process";
+-+import fs from "node:fs";
+-+import path from "node:path";
+-+import os from "node:os";
+-+import net from "node:net";
+-+import { fileURLToPath } from "node:url";
+-+
+-+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+-+
+-+const DB_PACKAGE_DIR = path.resolve(__dirname, "..", "..", "..", "..", "lib", "db");
+-+
+-+export interface TestPg {
+-+  databaseUrl: string;
+-+  stop: () => Promise<void>;
+-+}
+-+
+-+export interface TestServer {
+-+  baseUrl: string;
+-+  stop: () => Promise<void>;
+-+}
+-+
+-+export async function startTestPg(): Promise<TestPg> {
+-+  const port = await getFreePort();
+-+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "playsyncer-test-pg-"));
+-+  const pgdata = path.join(tmpDir, "pgdata");
+-+  const socketDir = path.join(tmpDir, "sockets");
+-+  const logFile = path.join(tmpDir, "pg.log");
+-+
+-+  fs.mkdirSync(socketDir, { recursive: true });
+-+
+-+  execSync(`initdb -D "${pgdata}" -U postgres --no-locale --encoding=UTF8`, {
+-+    stdio: "ignore",
+-+  });
+-+
+-+  await startPostgres(pgdata, socketDir, String(port), logFile);
+-+
+-+  execSync(
+-+    `createdb -h "${socketDir}" -p ${port} -U postgres playsyncer_test`,
+-+    { stdio: "ignore" },
+-+  );
+-+
+-+  const databaseUrl = `postgresql://postgres@localhost/playsyncer_test?host=${socketDir}&port=${port}`;
+-+
+-+  runMigrations(databaseUrl);
+-+
+-+  return {
+-+    databaseUrl,
+-+    stop: async () => {
+-+      try {
+-+        execSync(`pg_ctl -D "${pgdata}" stop -m fast`, { stdio: "ignore" });
+-+      } catch {
+-+        // Server may already be stopped; ignore.
+-+      }
+-+      fs.rmSync(tmpDir, { recursive: true, force: true });
+-+    },
+-+  };
+-+}
+-+
+-+export async function startApiServer(
+-+  databaseUrl: string,
+-+  serverDir: string,
+-+): Promise<TestServer> {
+-+  const port = await getFreePort();
+-+  const baseUrl = `http://localhost:${port}/api`;
+-+  const env = {
+-+    ...process.env,
+-+    DATABASE_URL: databaseUrl,
+-+    PORT: String(port),
+-+    BASE_PATH: "/api-server",
+-+    NODE_ENV: "test",
+-+  };
+-+
+-+  const child = spawn("node", [path.join(serverDir, "index.mjs")], {
+-+    env,
+-+    stdio: "ignore",
+-+  });
+-+
+-+  await waitForServer(baseUrl);
+-+
+-+  return {
+-+    baseUrl,
+-+    stop: async () => {
+-+      child.kill("SIGTERM");
+-+      await new Promise((resolve) => child.on("exit", resolve));
+-+    },
+-+  };
+-+}
+-+
+-+async function waitForServer(baseUrl: string): Promise<void> {
+-+  const healthUrl = `${baseUrl}/healthz`;
+-+  const deadline = Date.now() + 10000;
+-+  while (Date.now() < deadline) {
+-+    try {
+-+      const res = await fetch(healthUrl);
+-+      if (res.status === 200) return;
+-+    } catch {
+-+      // Server not ready yet.
+-+    }
+-+    await new Promise((resolve) => setTimeout(resolve, 100));
+-+  }
+-+  throw new Error(`API server did not become ready at ${healthUrl}`);
+-+}
+-+
+-+function runMigrations(databaseUrl: string): void {
+-+  const prevDatabaseUrl = process.env.DATABASE_URL;
+-+  process.env.DATABASE_URL = databaseUrl;
+-+  try {
+-+    execFileSync(
+-+      path.join(DB_PACKAGE_DIR, "node_modules", ".bin", "drizzle-kit"),
+-+      ["migrate", "--config", "./drizzle.config.ts"],
+-+      {
+-+        cwd: DB_PACKAGE_DIR,
+-+        stdio: "ignore",
+-+      },
+-+    );
+-+  } catch (err) {
+-+    throw new Error(
+-+      `Failed to run migrations against disposable database: ${err}`,
+-+    );
+-+  } finally {
+-+    process.env.DATABASE_URL = prevDatabaseUrl ?? undefined;
+-+  }
+-+}
+-+
+-+function startPostgres(
+-+  pgdata: string,
+-+  socketDir: string,
+-+  port: string,
+-+  logFile: string,
+-+): Promise<void> {
+-+  return new Promise((resolve, reject) => {
+-+    const proc = spawn(
+-+      "pg_ctl",
+-+      [
+-+        "-D",
+-+        pgdata,
+-+        "-l",
+-+        logFile,
+-+        "start",
+-+        "-o",
+-+        `-p ${port} -k ${socketDir} -h 127.0.0.1`,
+-+        "-w",
+-+      ],
+-+      { stdio: "ignore" },
+-+    );
+-+    proc.on("error", reject);
+-+    proc.on("close", (code) => {
+-+      if (code === 0) {
+-+        resolve();
+-+      } else {
+-+        reject(new Error(`pg_ctl start failed with exit code ${code}`));
+-+      }
+-+    });
+-+  });
+-+}
+-+
+-+function getFreePort(): Promise<number> {
+-+  return new Promise((resolve, reject) => {
+-+    const server = net.createServer();
+-+    server.listen(0, "127.0.0.1", () => {
+-+      const address = server.address();
+-+      const port =
+-+        typeof address === "object" && address !== null ? address.port : 0;
+-+      server.close(() => resolve(port));
+-+    });
+-+    server.on("error", reject);
+-+  });
+-+}
+-diff --git a/artifacts/api-server/src/routes/games.test.ts b/artifacts/api-server/src/routes/games.test.ts
+-new file mode 100644
+-index 0000000..d69dc4c
+---- /dev/null
+-+++ b/artifacts/api-server/src/routes/games.test.ts
+-@@ -0,0 +1,217 @@
+-+import { describe, it, before, after } from "node:test";
+-+import assert from "node:assert";
+-+import { execSync } from "node:child_process";
+-+import path from "node:path";
+-+import { fileURLToPath } from "node:url";
+-+import { startTestPg, startApiServer } from "../lib/test-pg.ts";
+-+
+-+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+-+const DIST_DIR = path.resolve(__dirname, "..", "..", "dist");
+-+
+-+async function createAccountForGame(
+-+  baseUrl: string,
+-+  gameId: string,
+-+  email: string,
+-+) {
+-+  const res = await fetch(`${baseUrl}/games/${gameId}/accounts`, {
+-+    method: "POST",
+-+    headers: { "Content-Type": "application/json" },
+-+    body: JSON.stringify({
+-+      email,
+-+      playstationPassword: "secret",
+-+      emailPassword: "secret",
+-+    }),
+-+  });
+-+  if (!res.ok) {
+-+    throw new Error(
+-+      `Failed to create account for test setup: ${res.status} ${await res.text()}`,
+-+    );
+-+  }
+-+  return res.json();
+-+}
+-+
+-+describe("Games API", () => {
+-+  let baseUrl: string;
+-+  let stopServer: () => Promise<void>;
+-+  let stopPg: () => Promise<void>;
+-+
+-+  before(async () => {
+-+    const { databaseUrl, stop: stopPgFn } = await startTestPg();
+-+    stopPg = stopPgFn;
+-+
+-+    // Build the server so the test can run it as a subprocess. The raw
+-+    // TypeScript source is not directly importable from node --test because of
+-+    // directory/no-extension imports used across the codebase.
+-+    execSync("pnpm run build", {
+-+      cwd: path.resolve(__dirname, "..", ".."),
+-+      env: {
+-+        ...process.env,
+-+        PORT: "8080",
+-+        BASE_PATH: "/api-server",
+-+      },
+-+      stdio: "ignore",
+-+    });
+-+
+-+    const { baseUrl: serverUrl, stop: stopServerFn } = await startApiServer(
+-+      databaseUrl,
+-+      DIST_DIR,
+-+    );
+-+    baseUrl = serverUrl;
+-+    stopServer = stopServerFn;
+-+  });
+-+
+-+  after(async () => {
+-+    await stopServer();
+-+    await stopPg();
+-+  });
+-+
+-+  async function createGame(title: string, platform: string, status?: string) {
+-+    const body: Record<string, string> = { title, platform };
+-+    if (status) body.status = status;
+-+    const res = await fetch(`${baseUrl}/games`, {
+-+      method: "POST",
+-+      headers: { "Content-Type": "application/json" },
+-+      body: JSON.stringify(body),
+-+    });
+-+    return {
+-+      res,
+-+      data: (await res.json()) as {
+-+        game: {
+-+          id: string;
+-+          title: string;
+-+          titleNormalized: string;
+-+          platform: string;
+-+          status: string;
+-+        };
+-+      },
+-+    };
+-+  }
+-+
+-+  async function updateGame(id: string, body: object) {
+-+    const res = await fetch(`${baseUrl}/games/${id}`, {
+-+      method: "PATCH",
+-+      headers: { "Content-Type": "application/json" },
+-+      body: JSON.stringify(body),
+-+    });
+-+    return {
+-+      res,
+-+      data: (await res.json()) as
+-+        | { game: { id: string; title: string; platform: string; status: string } }
+-+        | { error: string },
+-+    };
+-+  }
+-+
+-+  async function deleteGame(id: string) {
+-+    const res = await fetch(`${baseUrl}/games/${id}`, {
+-+      method: "DELETE",
+-+    });
+-+    return {
+-+      res,
+-+      data: (await res.json()) as { ok: boolean } | { error: string },
+-+    };
+-+  }
+-+
+-+  it("creates a game successfully", async () => {
+-+    const { res, data } = await createGame("FC 26", "PS5_ONLY");
+-+    assert.strictEqual(res.status, 201);
+-+    assert.strictEqual(data.game.title, "FC 26");
+-+    assert.strictEqual(data.game.titleNormalized, "fc 26");
+-+    assert.strictEqual(data.game.platform, "PS5_ONLY");
+-+    assert.strictEqual(data.game.status, "ACTIVE");
+-+  });
+-+
+-+  it("rejects duplicate normalized titles", async () => {
+-+    await createGame("Duplicate Title", "PS5_ONLY");
+-+    const { res, data } = await createGame(" Duplicate Title ", "PS4_ONLY");
+-+    assert.strictEqual(res.status, 409);
+-+    assert.ok("error" in data);
+-+    assert.strictEqual(data.error, "A game with this title already exists");
+-+    assert.ok(!data.error.includes("23505"));
+-+  });
+-+
+-+  it("rejects invalid UUID with 400", async () => {
+-+    const res = await fetch(`${baseUrl}/games/not-a-uuid`);
+-+    assert.strictEqual(res.status, 400);
+-+    const data = (await res.json()) as { error: string };
+-+    assert.ok(data.error);
+-+  });
+-+
+-+  it("returns 404 for missing game", async () => {
+-+    const res = await fetch(
+-+      `${baseUrl}/games/550e8400-e29b-41d4-a716-446655440000`,
+-+    );
+-+    assert.strictEqual(res.status, 404);
+-+  });
+-+
+-+  it("allows platform change without account history", async () => {
+-+    const { data: createData } = await createGame("Platform Change", "PS4_ONLY");
+-+    const { res, data } = await updateGame(createData.game.id, {
+-+      platform: "PS5_ONLY",
+-+    });
+-+    assert.strictEqual(res.status, 200);
+-+    assert.ok("game" in data);
+-+    assert.strictEqual(data.game.platform, "PS5_ONLY");
+-+  });
+-+
+-+  it("blocks platform change with account history", async () => {
+-+    const { data: createData } = await createGame("Platform Lock", "PS4_ONLY");
+-+    const gameId = createData.game.id;
+-+
+-+    await createAccountForGame(baseUrl, gameId, "platform-lock@example.com");
+-+
+-+    const { res, data } = await updateGame(gameId, { platform: "PS5_ONLY" });
+-+    assert.strictEqual(res.status, 409);
+-+    assert.ok("error" in data);
+-+    assert.strictEqual(
+-+      data.error,
+-+      "Cannot change platform after accounts exist for this game",
+-+    );
+-+  });
+-+
+-+  it("changes status from ACTIVE to INACTIVE", async () => {
+-+    const { data: createData } = await createGame("Status Change", "PS5_ONLY");
+-+    const { res, data } = await updateGame(createData.game.id, {
+-+      status: "INACTIVE",
+-+    });
+-+    assert.strictEqual(res.status, 200);
+-+    assert.ok("game" in data);
+-+    assert.strictEqual(data.game.status, "INACTIVE");
+-+  });
+-+
+-+  it("allows hard delete without history", async () => {
+-+    const { data: createData } = await createGame("Delete Allowed", "PS5_ONLY");
+-+    const id = createData.game.id;
+-+    const { res } = await deleteGame(id);
+-+    assert.strictEqual(res.status, 200);
+-+    const getRes = await fetch(`${baseUrl}/games/${id}`);
+-+    assert.strictEqual(getRes.status, 404);
+-+  });
+-+
+-+  it("blocks hard delete with account history", async () => {
+-+    const { data: createData } = await createGame("Delete Lock", "PS5_ONLY");
+-+    const gameId = createData.game.id;
+-+
+-+    await createAccountForGame(baseUrl, gameId, "delete-lock@example.com");
+-+
+-+    const { res, data } = await deleteGame(gameId);
+-+    assert.strictEqual(res.status, 409);
+-+    assert.ok("error" in data);
+-+    assert.strictEqual(
+-+      data.error,
+-+      "Cannot delete game while accounts exist; mark it inactive instead",
+-+    );
+-+  });
+-+
+-+  it("lists all games including inactive ones", async () => {
+-+    const { data: g1 } = await createGame("List Inactive", "PS5_ONLY");
+-+    await updateGame(g1.game.id, { status: "INACTIVE" });
+-+    await createGame("List Active", "PS5_ONLY");
+-+
+-+    const res = await fetch(`${baseUrl}/games`);
+-+    const data = (await res.json()) as { games: { title: string }[] };
+-+    assert.strictEqual(res.status, 200);
+-+    const titles = data.games.map((g) => g.title);
+-+    assert.ok(titles.includes("List Inactive"));
+-+    assert.ok(titles.includes("List Active"));
+-+  });
+-+});
+-diff --git a/artifacts/api-server/src/routes/games.ts b/artifacts/api-server/src/routes/games.ts
+-index 43b84d6..3c13137 100644
+---- a/artifacts/api-server/src/routes/games.ts
+-+++ b/artifacts/api-server/src/routes/games.ts
+-@@ -1,10 +1,17 @@
+--import { Router, type IRouter, type Request, type Response } from "express";
+-+import {
+-+  Router,
+-+  type IRouter,
+-+  type Request,
+-+  type Response,
+-+  type NextFunction,
+-+} from "express";
+- import { db, gamesTable, accountsTable } from "@workspace/db";
+-+import { normalizeGameTitle } from "@workspace/db/helpers";
+- import { eq, isNull, and, desc, count } from "drizzle-orm";
+- import { z } from "zod";
+--import { logger } from "../lib/logger";
+- import { p } from "../lib/req-param";
+- import { requireUuidParam } from "../lib/validate-uuid";
+-+import { HttpError } from "../middlewares/error-handler";
+- 
+- const router: IRouter = Router();
+- 
+-@@ -17,25 +24,75 @@ const CreateGameBody = z.object({
+-   title: z.string().min(1).max(120),
+-   coverUrl: z.string().url().optional(),
+-   platform: z.enum(["PS5_ONLY", "PS4_AND_PS5", "PS4_ONLY"]),
+--  status: z.enum(["active", "inactive"]).default("active"),
+-+  status: z.enum(["ACTIVE", "INACTIVE"]).default("ACTIVE"),
+- });
+- 
+- const UpdateGameBody = z.object({
+-   title: z.string().min(1).max(120).optional(),
+-   coverUrl: z.string().url().nullable().optional(),
+-   platform: z.enum(["PS5_ONLY", "PS4_AND_PS5", "PS4_ONLY"]).optional(),
+--  status: z.enum(["active", "inactive"]).optional(),
+-+  status: z.enum(["ACTIVE", "INACTIVE"]).optional(),
+- });
+- 
+-+// ── Helpers ─────────────────────────────────────────────────────────────────
+-+
+-+async function fetchGame(id: string) {
+-+  const [game] = await db
+-+    .select()
+-+    .from(gamesTable)
+-+    .where(eq(gamesTable.id, id))
+-+    .limit(1);
+-+  return game ?? null;
+-+}
+-+
+-+async function requireGame(id: string) {
+-+  const game = await fetchGame(id);
+-+  if (!game || game.deletedAt) {
+-+    throw new HttpError(404, "Game not found");
+-+  }
+-+  return game;
+-+}
+-+
+-+async function hasAccountHistory(gameId: string): Promise<boolean> {
+-+  const rows = await db
+-+    .select({ count: count(accountsTable.id) })
+-+    .from(accountsTable)
+-+    .where(and(eq(accountsTable.gameId, gameId), isNull(accountsTable.deletedAt)))
+-+    .limit(1);
+-+  return (rows[0]?.count ?? 0) > 0;
+-+}
+-+
+-+function isDuplicateTitleError(err: unknown): boolean {
+-+  if (typeof err !== "object" || err === null) return false;
+-+  const error = err as {
+-+    code?: string;
+-+    cause?: { code?: string };
+-+    message?: string;
+-+  };
+-+  if (error.code === "23505") return true;
+-+  if (error.cause?.code === "23505") return true;
+-+  if (
+-+    error.message?.includes("duplicate key value violates unique constraint")
+-+  ) {
+-+    return true;
+-+  }
+-+  return false;
+-+}
+-+
+- // ── Routes ───────────────────────────────────────────────────────────────────
+- 
+--/** GET /games — list all non-deleted games with account count */
+--router.get("/games", async (_req: Request, res: Response) => {
+-+/** GET /games — list all games with account count */
+-+router.get("/games", async (
+-+  _req: Request,
+-+  res: Response,
+-+  next: NextFunction,
+-+) => {
+-   try {
+-     const rows = await db
+-       .select({
+-         id: gamesTable.id,
+-         title: gamesTable.title,
+-+        titleNormalized: gamesTable.titleNormalized,
+-         coverUrl: gamesTable.coverUrl,
+-         platform: gamesTable.platform,
+-         status: gamesTable.status,
+-@@ -57,92 +114,124 @@ router.get("/games", async (_req: Request, res: Response) => {
+- 
+-     res.json({ games: rows });
+-   } catch (err) {
+--    logger.error(err, "GET /games failed");
+--    res.status(500).json({ error: "Internal server error" });
+-+    next(err);
+-   }
+- });
+- 
+- /** GET /games/:id — single game */
+--router.get("/games/:id", async (req: Request, res: Response) => {
+-+router.get("/games/:id", async (
+-+  req: Request,
+-+  res: Response,
+-+  next: NextFunction,
+-+) => {
+-   try {
+--    const [game] = await db
+--      .select()
+--      .from(gamesTable)
+--      .where(eq(gamesTable.id, p(req.params["id"])))
+--      .limit(1);
+--
+--    if (!game || game.deletedAt) {
+--      res.status(404).json({ error: "Game not found" });
+--      return;
+--    }
+-+    const game = await requireGame(p(req.params["id"]));
+-     res.json({ game });
+-   } catch (err) {
+--    logger.error(err, "GET /games/:id failed");
+--    res.status(500).json({ error: "Internal server error" });
+-+    next(err);
+-   }
+- });
+- 
+- /** POST /games — create game */
+--router.post("/games", async (req: Request, res: Response) => {
+--  const parsed = CreateGameBody.safeParse(req.body);
+--  if (!parsed.success) {
+--    res.status(400).json({ error: "Validation failed", issues: parsed.error.issues });
+--    return;
+--  }
+-+router.post("/games", async (
+-+  req: Request,
+-+  res: Response,
+-+  next: NextFunction,
+-+) => {
+-   try {
+-+    const parsed = CreateGameBody.parse(req.body);
+-+    const title = parsed.title.trim();
+-+    const titleNormalized = normalizeGameTitle(parsed.title);
+-+
+-     const [game] = await db
+-       .insert(gamesTable)
+--      .values(parsed.data)
+-+      .values({
+-+        title,
+-+        titleNormalized,
+-+        coverUrl: parsed.coverUrl,
+-+        platform: parsed.platform,
+-+        status: parsed.status,
+-+      })
+-       .returning();
+-+
+-     res.status(201).json({ game });
+-   } catch (err) {
+--    logger.error(err, "POST /games failed");
+--    res.status(500).json({ error: "Internal server error" });
+-+    if (isDuplicateTitleError(err)) {
+-+      next(new HttpError(409, "A game with this title already exists"));
+-+      return;
+-+    }
+-+    next(err);
+-   }
+- });
+- 
+- /** PATCH /games/:id — update game */
+--router.patch("/games/:id", async (req: Request, res: Response) => {
+--  const parsed = UpdateGameBody.safeParse(req.body);
+--  if (!parsed.success) {
+--    res.status(400).json({ error: "Validation failed", issues: parsed.error.issues });
+--    return;
+--  }
+-+router.patch("/games/:id", async (
+-+  req: Request,
+-+  res: Response,
+-+  next: NextFunction,
+-+) => {
+-   try {
+-+    const id = p(req.params["id"]);
+-+    const parsed = UpdateGameBody.parse(req.body);
+-+    await requireGame(id);
+-+
+-+    if (parsed.platform !== undefined) {
+-+      if (await hasAccountHistory(id)) {
+-+        throw new HttpError(
+-+          409,
+-+          "Cannot change platform after accounts exist for this game",
+-+        );
+-+      }
+-+    }
+-+
+-+    const update: Partial<typeof gamesTable.$inferInsert> = {
+-+      updatedAt: new Date(),
+-+    };
+-+    if (parsed.title !== undefined) {
+-+      update.title = parsed.title.trim();
+-+      update.titleNormalized = normalizeGameTitle(parsed.title);
+-+    }
+-+    if (parsed.coverUrl !== undefined) update.coverUrl = parsed.coverUrl;
+-+    if (parsed.platform !== undefined) update.platform = parsed.platform;
+-+    if (parsed.status !== undefined) update.status = parsed.status;
+-+
+-     const [game] = await db
+-       .update(gamesTable)
+--      .set({ ...parsed.data, updatedAt: new Date() })
+--      .where(eq(gamesTable.id, p(req.params["id"])))
+-+      .set(update)
+-+      .where(eq(gamesTable.id, id))
+-       .returning();
+- 
+--    if (!game) {
+--      res.status(404).json({ error: "Game not found" });
+--      return;
+--    }
+-     res.json({ game });
+-   } catch (err) {
+--    logger.error(err, "PATCH /games/:id failed");
+--    res.status(500).json({ error: "Internal server error" });
+-+    if (isDuplicateTitleError(err)) {
+-+      next(new HttpError(409, "A game with this title already exists"));
+-+      return;
+-+    }
+-+    next(err);
+-   }
+- });
+- 
+--/** DELETE /games/:id — soft delete */
+--router.delete("/games/:id", async (req: Request, res: Response) => {
+-+/** DELETE /games/:id — hard delete when no account history */
+-+router.delete("/games/:id", async (
+-+  req: Request,
+-+  res: Response,
+-+  next: NextFunction,
+-+) => {
+-   try {
+--    const [game] = await db
+--      .update(gamesTable)
+--      .set({ deletedAt: new Date(), updatedAt: new Date() })
+--      .where(eq(gamesTable.id, p(req.params["id"])))
+--      .returning();
+--
+--    if (!game) {
+--      res.status(404).json({ error: "Game not found" });
+--      return;
+-+    const id = p(req.params["id"]);
+-+    await requireGame(id);
+-+
+-+    if (await hasAccountHistory(id)) {
+-+      throw new HttpError(
+-+        409,
+-+        "Cannot delete game while accounts exist; mark it inactive instead",
+-+      );
+-     }
+-+
+-+    await db.delete(gamesTable).where(eq(gamesTable.id, id));
+-     res.json({ ok: true });
+-   } catch (err) {
+--    logger.error(err, "DELETE /games/:id failed");
+--    res.status(500).json({ error: "Internal server error" });
+-+    next(err);
+-   }
+- });
+- 
+-diff --git a/attached_assets/Pasted-Start-PS-02A-Games-Contract-and-Backend-Read-and-follow_1784109476318.txt b/attached_assets/Pasted-Start-PS-02A-Games-Contract-and-Backend-Read-and-follow_1784109476318.txt
+-new file mode 100644
+-index 0000000..6ca309f
+---- /dev/null
+-+++ b/attached_assets/Pasted-Start-PS-02A-Games-Contract-and-Backend-Read-and-follow_1784109476318.txt
+-@@ -0,0 +1,335 @@
+-+Start PS-02A — Games Contract and Backend.
+-+
+-+Read and follow these files before modifying anything:
+-+
+-+- AGENTS.md
+-+- docs/PRODUCT_RULES.md
+-+- docs/CURRENT_PHASE.md
+-+- docs/DECISION_LOG.md
+-+- docs/MIGRATIONS.md
+-+
+-+The active baseline is the completed PS-01 repository state.
+-+
+-+Before implementation:
+-+
+-+1. Run:
+-+
+-+git rev-parse HEAD
+-+
+-+Save the result as START_HEAD.
+-+
+-+2. Inspect the existing:
+-+
+-+- Games schema and enums
+-+- Games database relations
+-+- Games API routes and services
+-+- Accounts relation to Games
+-+- Orders and Order Items relation to Games
+-+- OpenAPI Games paths and schemas
+-+- generated Zod/API client outputs
+-+- existing migration files and Drizzle configuration
+-+- existing Games tests
+-+
+-+Do not produce a separate long analysis report. Use the inspection to make minimal and safe implementation changes.
+-+
+-+## Objective
+-+
+-+Implement the approved Games data contract and database-backed Backend.
+-+
+-+Do not implement or modify the Games frontend in this phase.
+-+
+-+## Canonical Games contract
+-+
+-+Platforms must be exactly:
+-+
+-+- PS5_ONLY
+-+- PS4_ONLY
+-+- PS4_AND_PS5
+-+
+-+Statuses must be exactly:
+-+
+-+- ACTIVE
+-+- INACTIVE
+-+
+-+The Game model must support:
+-+
+-+- UUID primary key
+-+- title
+-+- normalized title
+-+- platform
+-+- status
+-+- existing image field if already supported
+-+- created timestamp
+-+- updated timestamp
+-+
+-+Do not redesign image storage or upload behavior.
+-+
+-+## Title normalization
+-+
+-+Implement one reusable server-side title-normalization function.
+-+
+-+It must:
+-+
+-+- trim surrounding whitespace
+-+- collapse repeated internal whitespace to one space
+-+- use a consistent case-insensitive representation for duplicate detection
+-+
+-+These values must conflict:
+-+
+-+- `FC 26`
+-+- ` fc 26 `
+-+- `FC   26`
+-+
+-+These values must remain distinct:
+-+
+-+- `FC 26`
+-+- `FC 26 Ultimate Edition`
+-+
+-+Store the normalized value in the database.
+-+
+-+Add a database-level unique index or constraint for the normalized title.
+-+
+-+Do not rely only on frontend or route validation.
+-+
+-+Map duplicate-title conflicts to a controlled HTTP 409 response without exposing raw PostgreSQL errors.
+-+
+-+## Platform protection
+-+
+-+A Game platform may be changed only when no Account history exists for that Game.
+-+
+-+Once at least one Account references the Game:
+-+
+-+- title may still be edited
+-+- status may still be edited
+-+- platform changes must return HTTP 409
+-+
+-+Use the existing Account relation. Do not redesign Accounts.
+-+
+-+## Status behavior
+-+
+-+Support:
+-+
+-+- ACTIVE
+-+- INACTIVE
+-+
+-+Inactive Games remain stored and retrievable through management API operations.
+-+
+-+Do not implement Account or Assignment blocking in this phase. That enforcement belongs to later phases.
+-+
+-+## Hard deletion
+-+
+-+Hard deletion is allowed only when the Game has no related history.
+-+
+-+At minimum:
+-+
+-+- if any Account references the Game, deletion must return HTTP 409
+-+- no Account, Capacity, Order, or historical record may be cascade-deleted
+-+
+-+Inspect whether the current schema has a reliable direct or indirect Order-to-Game relation.
+-+
+-+If a safe existing relation exists, also block deletion when Order history exists.
+-+
+-+If no reliable Order-to-Game relation exists:
+-+
+-+- do not invent or redesign the Orders schema
+-+- implement the Account-history protection
+-+- report Order-history deletion protection as explicitly deferred to the Orders domain phase
+-+
+-+Do not claim that Order-history protection is implemented unless supported by the actual schema and tests.
+-+
+-+## Migration requirements
+-+
+-+Do not edit, squash, or replace the initial migration.
+-+
+-+Create a new versioned Drizzle migration for PS-02A.
+-+
+-+Do not use:
+-+
+-+- drizzle-kit push
+-+- drizzle-kit push --force
+-+- direct schema mutation against the shared Replit database
+-+
+-+Do not apply the migration to the current shared database.
+-+
+-+Verify against a clean disposable PostgreSQL database by applying:
+-+
+-+1. all existing migrations in order
+-+2. the new PS-02A migration
+-+
+-+Report the exact migration result.
+-+
+-+## Games API
+-+
+-+Use the existing route conventions where reasonable.
+-+
+-+Implement or correct database-backed operations for:
+-+
+-+- list Games
+-+- get one Game
+-+- create Game
+-+- update Game
+-+- change Game status
+-+- hard delete Game
+-+
+-+Avoid unnecessary duplicate endpoints when the existing update endpoint can safely manage title, platform, and status.
+-+
+-+Required HTTP behavior:
+-+
+-+- invalid UUID → 400
+-+- invalid request body → 400
+-+- missing Game → 404
+-+- normalized duplicate title → 409
+-+- platform change after Account history → 409
+-+- prohibited hard deletion → 409
+-+- unexpected failure → controlled 500
+-+
+-+Use the PS-01:
+-+
+-+- centralized error handler
+-+- UUID validation utility
+-+- controlled request parsing
+-+
+-+Do not expose database errors, stack traces, SQL, or sensitive values.
+-+
+-+Keep validation and normalization logic reusable rather than duplicating it across routes.
+-+
+-+Use transactions when an operation contains multiple dependent database actions.
+-+
+-+## OpenAPI and generated outputs
+-+
+-+Update OpenAPI only for the Games backend contract implemented in this phase.
+-+
+-+Regenerate the project’s existing:
+-+
+-+- Zod schemas
+-+- API client
+-+- related generated outputs
+-+
+-+Do not manually modify generated files when generation is available.
+-+
+-+Do not connect the frontend Games page to the API yet.
+-+
+-+## Required focused tests
+-+
+-+Add or update tests for at least:
+-+
+-+1. title normalization
+-+2. duplicate normalized-title rejection
+-+3. successful Game creation
+-+4. invalid UUID returning 400
+-+5. missing Game returning 404
+-+6. platform change allowed without Account history
+-+7. platform change blocked with Account history
+-+8. ACTIVE to INACTIVE status change
+-+9. hard deletion allowed without history
+-+10. hard deletion blocked with Account history
+-+11. hard deletion blocked with Order history only if the current schema safely supports this relation
+-+12. duplicate conflict does not expose a raw database error
+-+
+-+Tests must use isolated test data or a disposable database.
+-+
+-+Do not modify the shared Replit database for tests.
+-+
+-+## Prohibited changes
+-+
+-+Do not modify:
+-+
+-+- Games frontend page
+-+- Games dialogs or animations
+-+- frontend runtime mock flow
+-+- Accounts business implementation
+-+- Capacity templates
+-+- Orders business implementation
+-+- Store Mapping
+-+- Assignment
+-+- Connector
+-+- Authentication
+-+- Staff
+-+- RBAC
+-+- Dashboard
+-+- unrelated UI
+-+- unrelated schemas or routes
+-+
+-+Do not add dependencies without explicit approval.
+-+
+-+Do not perform unrelated refactoring.
+-+
+-+Do not mark PS-02A completed in docs/CURRENT_PHASE.md.
+-+
+-+## Validation
+-+
+-+Run and report:
+-+
+-+- repository typecheck
+-+- API typecheck
+-+- API build
+-+- focused Games tests
+-+- OpenAPI validation
+-+- generated-client/codegen verification
+-+- disposable PostgreSQL full migration-chain verification
+-+
+-+Search the final source and confirm:
+-+
+-+- automatic drizzle push was not reintroduced
+-+- the initial migration was not modified
+-+- the Games frontend was not changed
+-+- no unrelated business schema was changed
+-+- no sensitive information is logged
+-+
+-+## Git evidence
+-+
+-+After implementation, record:
+-+
+-+git rev-parse HEAD
+-+
+-+Save it as END_HEAD.
+-+
+-+Also run:
+-+
+-+git status --short
+-+
+-+Create a phase diff even if Replit automatically commits:
+-+
+-+mkdir -p exports
+-+git diff --binary START_HEAD..END_HEAD > exports/ps02a-games-backend.diff
+-+
+-+If working-tree changes remain, also create:
+-+
+-+git diff --binary START_HEAD > exports/ps02a-games-backend-working-tree.diff
+-+
+-+## Required final delivery
+-+
+-+Provide:
+-+
+-+1. short implementation summary
+-+2. START_HEAD
+-+3. END_HEAD
+-+4. git status --short
+-+5. files changed
+-+6. runtime changes actually implemented
+-+7. documentation-only changes
+-+8. migration filename
+-+9. API operations implemented
+-+10. title-normalization behavior
+-+11. platform-lock behavior
+-+12. hard-delete behavior
+-+13. Order-history enforcement status: implemented or deferred with exact reason
+-+14. commands executed and exact results
+-+15. disposable database migration result
+-+16. shared database impact
+-+17. known risks and deferred items
+-+18. rollback instructions
+-+19. exports/ps02a-games-backend.diff
+-+20. complete updated project ZIP
+-+
+-+Exclude from the ZIP:
+-+
+-+- node_modules
+-+- .git
+-+- temporary PostgreSQL data
+-+- build caches
+-+- TypeScript build-info files
+-+- previous unrelated exports
+-+
+-+Do not claim production readiness.
+-+Do not change anything outside PS-02A.
+-\ No newline at end of file
+-diff --git a/docs/CURRENT_PHASE.md b/docs/CURRENT_PHASE.md
+-index 3b0dfcd..3b11212 100644
+---- a/docs/CURRENT_PHASE.md
+-+++ b/docs/CURRENT_PHASE.md
+-@@ -1,28 +1,128 @@
+- # Current Phase
+- 
+--## PS-01 — Backend Foundation and Migration Discipline
+-+## Active Phase
+- 
+--Current baseline:
+-+PS-02A — Games Contract and Backend
+- 
+--`playsyncernv3.1-main.zip`
+-+## Status
+- 
+--Current goal:
+-+ACTIVE
+- 
+--- remove unsafe automatic schema push
+--- establish versioned Drizzle migrations
+--- add process health and database readiness endpoints
+--- add central API error handling
+--- validate UUID route parameters
+--- add controlled request-size and malformed-JSON handling
+--- add cryptography and lookup-hash utilities with tests
+--- align OpenAPI/codegen only for foundation endpoints
+-+This phase is not completed until its source changes, migration, tests, and delivery evidence have been independently reviewed and accepted.
+- 
+--Out of scope:
+-+## Baseline
+- 
+--- Games business changes
+--- Accounts business changes
+--- Capacity template changes
+--- Orders redesign
+-+The active baseline is the completed PS-01 repository state.
+-+
+-+PS-01 established:
+-+
+-+- controlled versioned Drizzle migrations
+-+- removal of automatic `drizzle-kit push`
+-+- health and readiness endpoints
+-+- centralized API error handling
+-+- UUID validation
+-+- controlled JSON request handling
+-+- reusable encryption and keyed lookup-hash utilities
+-+
+-+Do not revert or weaken PS-01 controls.
+-+
+-+## Objective
+-+
+-+Implement the approved Games domain rules in the database and backend.
+-+
+-+This phase covers:
+-+
+-+- Games data contract
+-+- Games schema
+-+- versioned Games migration
+-+- title normalization
+-+- duplicate-title protection
+-+- Games API
+-+- platform-change protection
+-+- controlled status management
+-+- controlled hard deletion
+-+- Games OpenAPI contract
+-+- generated API client/schema updates
+-+- focused backend tests
+-+
+-+Frontend integration and removal of Games runtime mocks belong to PS-02B and are not part of this phase.
+-+
+-+## Canonical Games Rules
+-+
+-+### Platforms
+-+
+-+Only these values are allowed:
+-+
+-+- `PS5_ONLY`
+-+- `PS4_ONLY`
+-+- `PS4_AND_PS5`
+-+
+-+### Statuses
+-+
+-+Only these values are allowed:
+-+
+-+- `ACTIVE`
+-+- `INACTIVE`
+-+
+-+### Title Rules
+-+
+-+- A Game title is required.
+-+- Surrounding whitespace must be removed.
+-+- Repeated internal whitespace must collapse to one space.
+-+- Duplicate detection must be case-insensitive.
+-+- Exact normalized duplicate titles are forbidden.
+-+- Distinct editions remain allowed.
+-+
+-+Examples that must conflict:
+-+
+-+- `FC 26`
+-+- ` fc 26 `
+-+- `FC   26`
+-+
+-+Examples that may coexist:
+-+
+-+- `FC 26`
+-+- `FC 26 Ultimate Edition`
+-+
+-+### Platform Rule
+-+
+-+A Game platform may change only while the Game has no Account history.
+-+
+-+Once at least one Account exists for the Game, its platform becomes immutable.
+-+
+-+### Status Rule
+-+
+-+Inactive Games remain stored and visible for management, search, and historical references.
+-+
+-+Later Account and Assignment phases must block new operational usage of inactive Games.
+-+
+-+### Deletion Rule
+-+
+-+Hard deletion is allowed only when the Game has no Account or Order history.
+-+
+-+Historical Accounts, Orders, Capacities, or related records must never be cascade-deleted.
+-+
+-+When hard deletion is not allowed, the Game must remain stored and may be changed to `INACTIVE`.
+-+
+-+## Allowed Scope
+-+
+-+- inspect and minimally correct the existing Games schema
+-+- create a new versioned migration
+-+- implement database-backed Games API operations
+-+- add reusable Games-domain validation and normalization
+-+- update Games OpenAPI definitions
+-+- regenerate existing generated schema/client outputs
+-+- add focused Games backend tests
+-+- update Games-specific documentation when technically necessary
+-+
+-+## Prohibited Scope
+-+
+-+- Games frontend integration
+-+- removing frontend Games mocks
+-+- redesigning Games UI
+-+- Accounts implementation or redesign
+-+- Capacity template implementation or redesign
+-+- Orders implementation or redesign
+- - Store Mapping
+- - Assignment
+- - Connector
+-@@ -30,6 +130,41 @@ Out of scope:
+- - Staff
+- - RBAC
+- - Dashboard
+--- destructive database changes
+-+- unrelated refactoring
+-+- changing the project stack
+-+- adding dependencies without explicit approval
+-+- modifying the shared/live database
+-+- `drizzle-kit push`
+-+- `drizzle-kit push --force`
+-+- editing or replacing the initial migration
+-+
+-+## Database Safety
+-+
+-+Create a new migration for PS-02A.
+-+
+-+Do not apply it to the existing shared Replit database.
+-+
+-+Verify the complete migration chain only against a clean disposable PostgreSQL database.
+-+
+-+## Completion Criteria
+-+
+-+PS-02A may be submitted for review only when:
+-+
+-+- Games schema matches the approved rules
+-+- a new versioned migration exists
+-+- migration chain succeeds on disposable PostgreSQL
+-+- Games API is database-backed
+-+- duplicate titles are rejected
+-+- invalid UUID values return HTTP 400
+-+- missing Games return HTTP 404
+-+- conflicting business operations return HTTP 409
+-+- platform changes are blocked after Account history exists
+-+- hard deletion is controlled
+-+- OpenAPI and generated outputs are synchronized
+-+- backend typecheck, build, and focused Games tests pass
+-+- no shared database was modified
+-+- no Games frontend or unrelated product domain was changed
+-+
+-+## Next Planned Phase
+- 
+--Do not change business schemas during this phase unless the active implementation prompt explicitly authorizes a minimal foundation-only change.
+-+PS-02B — Games Frontend Integration
+-\ No newline at end of file
+-diff --git a/lib/api-client-react/src/generated/api.schemas.ts b/lib/api-client-react/src/generated/api.schemas.ts
+-index 142ae28..052ee67 100644
+---- a/lib/api-client-react/src/generated/api.schemas.ts
+-+++ b/lib/api-client-react/src/generated/api.schemas.ts
+-@@ -18,3 +18,77 @@ export interface ReadinessStatus {
+-   checks: ReadinessStatusChecks;
+- }
+- 
+-+export type GamePlatform = typeof GamePlatform[keyof typeof GamePlatform];
+-+
+-+
+-+export const GamePlatform = {
+-+  PS5_ONLY: 'PS5_ONLY',
+-+  PS4_AND_PS5: 'PS4_AND_PS5',
+-+  PS4_ONLY: 'PS4_ONLY',
+-+} as const;
+-+
+-+export type GameStatus = typeof GameStatus[keyof typeof GameStatus];
+-+
+-+
+-+export const GameStatus = {
+-+  ACTIVE: 'ACTIVE',
+-+  INACTIVE: 'INACTIVE',
+-+} as const;
+-+
+-+export interface Game {
+-+  id: string;
+-+  title: string;
+-+  titleNormalized: string;
+-+  coverUrl?: string | null;
+-+  platform: GamePlatform;
+-+  status: GameStatus;
+-+  createdAt: string;
+-+  updatedAt: string;
+-+  deletedAt?: string | null;
+-+}
+-+
+-+export type GameListItem = Game & {
+-+  accountCount: number;
+-+};
+-+
+-+export interface GameListResponse {
+-+  games: GameListItem[];
+-+}
+-+
+-+export interface GameResponse {
+-+  game: Game;
+-+}
+-+
+-+export interface CreateGameRequest {
+-+  /**
+-+     * @minLength 1
+-+     * @maxLength 120
+-+     */
+-+  title: string;
+-+  coverUrl?: string;
+-+  platform: GamePlatform;
+-+  status?: GameStatus;
+-+}
+-+
+-+export interface UpdateGameRequest {
+-+  /**
+-+     * @minLength 1
+-+     * @maxLength 120
+-+     */
+-+  title?: string;
+-+  coverUrl?: string | null;
+-+  platform?: GamePlatform;
+-+  status?: GameStatus;
+-+}
+-+
+-+export interface OkResponse {
+-+  ok: boolean;
+-+}
+-+
+-+export type ErrorResponseIssuesItem = { [key: string]: unknown };
+-+
+-+export interface ErrorResponse {
+-+  error: string;
+-+  issues?: ErrorResponseIssuesItem[];
+-+}
+-+
+-diff --git a/lib/api-client-react/src/generated/api.ts b/lib/api-client-react/src/generated/api.ts
+-index c8c805e..b376a58 100644
+---- a/lib/api-client-react/src/generated/api.ts
+-+++ b/lib/api-client-react/src/generated/api.ts
+-@@ -6,22 +6,32 @@
+-  * OpenAPI spec version: 0.1.0
+-  */
+- import {
+-+  useMutation,
+-   useQuery
+- } from '@tanstack/react-query';
+- import type {
+-+  MutationFunction,
+-   QueryFunction,
+-   QueryKey,
+-+  UseMutationOptions,
+-+  UseMutationResult,
+-   UseQueryOptions,
+-   UseQueryResult
+- } from '@tanstack/react-query';
+- 
+- import type {
+-+  CreateGameRequest,
+-+  ErrorResponse,
+-+  GameListResponse,
+-+  GameResponse,
+-   HealthStatus,
+--  ReadinessStatus
+-+  OkResponse,
+-+  ReadinessStatus,
+-+  UpdateGameRequest
+- } from './api.schemas';
+- 
+- import { customFetch } from '../custom-fetch';
+--import type { ErrorType } from '../custom-fetch';
+-+import type { ErrorType , BodyType } from '../custom-fetch';
+- 
+- type AwaitedInput<T> = PromiseLike<T> | T;
+- 
+-@@ -203,3 +213,374 @@ export function useReadinessCheck<TData = Awaited<ReturnType<typeof readinessChe
+- 
+- 
+- 
+-+export const getListGamesUrl = () => {
+-+
+-+
+-+
+-+
+-+  return `/api/games`
+-+}
+-+
+-+/**
+-+ * Returns all games, including inactive ones, with account counts.
+-+ * @summary List all games
+-+ */
+-+export const listGames = async ( options?: RequestInit): Promise<GameListResponse> => {
+-+
+-+  return customFetch<GameListResponse>(getListGamesUrl(),
+-+  {
+-+    ...options,
+-+    method: 'GET'
+-+
+-+
+-+  }
+-+);}
+-+
+-+
+-+
+-+
+-+
+-+export const getListGamesQueryKey = () => {
+-+    return [
+-+    `/api/games`
+-+    ] as const;
+-+    }
+-+
+-+
+-+export const getListGamesQueryOptions = <TData = Awaited<ReturnType<typeof listGames>>, TError = ErrorType<ErrorResponse>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listGames>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+-+) => {
+-+
+-+const {query: queryOptions, request: requestOptions} = options ?? {};
+-+
+-+  const queryKey =  queryOptions?.queryKey ?? getListGamesQueryKey();
+-+
+-+
+-+
+-+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listGames>>> = ({ signal }) => listGames({ signal, ...requestOptions });
+-+
+-+
+-+
+-+
+-+
+-+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listGames>>, TError, TData> & { queryKey: QueryKey }
+-+}
+-+
+-+export type ListGamesQueryResult = NonNullable<Awaited<ReturnType<typeof listGames>>>
+-+export type ListGamesQueryError = ErrorType<ErrorResponse>
+-+
+-+
+-+/**
+-+ * @summary List all games
+-+ */
+-+
+-+export function useListGames<TData = Awaited<ReturnType<typeof listGames>>, TError = ErrorType<ErrorResponse>>(
+-+  options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listGames>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+-+
+-+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+-+
+-+  const queryOptions = getListGamesQueryOptions(options)
+-+
+-+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+-+
+-+  return withQueryKey(query, queryOptions.queryKey);
+-+}
+-+
+-+
+-+
+-+
+-+
+-+
+-+
+-+export const getCreateGameUrl = () => {
+-+
+-+
+-+
+-+
+-+  return `/api/games`
+-+}
+-+
+-+/**
+-+ * Creates a new game with a normalized title. Duplicate normalized titles are rejected.
+-+ * @summary Create a game
+-+ */
+-+export const createGame = async (createGameRequest: CreateGameRequest, options?: RequestInit): Promise<GameResponse> => {
+-+
+-+  return customFetch<GameResponse>(getCreateGameUrl(),
+-+  {
+-+    ...options,
+-+    method: 'POST',
+-+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+-+    body: JSON.stringify(createGameRequest)
+-+  }
+-+);}
+-+
+-+
+-+
+-+
+-+export const getCreateGameMutationOptions = <TError = ErrorType<ErrorResponse>,
+-+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createGame>>, TError,{data: BodyType<CreateGameRequest>}, TContext>, request?: SecondParameter<typeof customFetch>}
+-+): UseMutationOptions<Awaited<ReturnType<typeof createGame>>, TError,{data: BodyType<CreateGameRequest>}, TContext> => {
+-+
+-+const mutationKey = ['createGame'];
+-+const {mutation: mutationOptions, request: requestOptions} = options ?
+-+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+-+      options
+-+      : {...options, mutation: {...options.mutation, mutationKey}}
+-+      : {mutation: { mutationKey, }, request: undefined};
+-+
+-+
+-+
+-+
+-+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof createGame>>, {data: BodyType<CreateGameRequest>}> = (props) => {
+-+          const {data} = props ?? {};
+-+
+-+          return  createGame(data,requestOptions)
+-+        }
+-+
+-+
+-+
+-+
+-+
+-+
+-+  return  { mutationFn, ...mutationOptions }}
+-+
+-+    export type CreateGameMutationResult = NonNullable<Awaited<ReturnType<typeof createGame>>>
+-+    export type CreateGameMutationBody = BodyType<CreateGameRequest>
+-+    export type CreateGameMutationError = ErrorType<ErrorResponse>
+-+
+-+    /**
+-+ * @summary Create a game
+-+ */
+-+export const useCreateGame = <TError = ErrorType<ErrorResponse>,
+-+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createGame>>, TError,{data: BodyType<CreateGameRequest>}, TContext>, request?: SecondParameter<typeof customFetch>}
+-+ ): UseMutationResult<
+-+        Awaited<ReturnType<typeof createGame>>,
+-+        TError,
+-+        {data: BodyType<CreateGameRequest>},
+-+        TContext
+-+      > => {
+-+      return useMutation(getCreateGameMutationOptions(options));
+-+    }
+-+
+-+export const getGetGameUrl = (id: string,) => {
+-+
+-+
+-+
+-+
+-+  return `/api/games/${id}`
+-+}
+-+
+-+/**
+-+ * @summary Get a single game
+-+ */
+-+export const getGame = async (id: string, options?: RequestInit): Promise<GameResponse> => {
+-+
+-+  return customFetch<GameResponse>(getGetGameUrl(id),
+-+  {
+-+    ...options,
+-+    method: 'GET'
+-+
+-+
+-+  }
+-+);}
+-+
+-+
+-+
+-+
+-+
+-+export const getGetGameQueryKey = (id: string,) => {
+-+    return [
+-+    `/api/games/${id}`
+-+    ] as const;
+-+    }
+-+
+-+
+-+export const getGetGameQueryOptions = <TData = Awaited<ReturnType<typeof getGame>>, TError = ErrorType<ErrorResponse>>(id: string, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getGame>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+-+) => {
+-+
+-+const {query: queryOptions, request: requestOptions} = options ?? {};
+-+
+-+  const queryKey =  queryOptions?.queryKey ?? getGetGameQueryKey(id);
+-+
+-+
+-+
+-+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getGame>>> = ({ signal }) => getGame(id, { signal, ...requestOptions });
+-+
+-+
+-+
+-+
+-+
+-+   return  { queryKey, queryFn, enabled: id !== null && id !== undefined, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getGame>>, TError, TData> & { queryKey: QueryKey }
+-+}
+-+
+-+export type GetGameQueryResult = NonNullable<Awaited<ReturnType<typeof getGame>>>
+-+export type GetGameQueryError = ErrorType<ErrorResponse>
+-+
+-+
+-+/**
+-+ * @summary Get a single game
+-+ */
+-+
+-+export function useGetGame<TData = Awaited<ReturnType<typeof getGame>>, TError = ErrorType<ErrorResponse>>(
+-+ id: string, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getGame>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+-+
+-+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+-+
+-+  const queryOptions = getGetGameQueryOptions(id,options)
+-+
+-+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+-+
+-+  return withQueryKey(query, queryOptions.queryKey);
+-+}
+-+
+-+
+-+
+-+
+-+
+-+
+-+
+-+export const getUpdateGameUrl = (id: string,) => {
+-+
+-+
+-+
+-+
+-+  return `/api/games/${id}`
+-+}
+-+
+-+/**
+-+ * Updates a game's title, cover URL, status, or platform.
+-+ * Platform changes are blocked once accounts exist for the game.
+-+ * @summary Update a game
+-+ */
+-+export const updateGame = async (id: string,
+-+    updateGameRequest: UpdateGameRequest, options?: RequestInit): Promise<GameResponse> => {
+-+
+-+  return customFetch<GameResponse>(getUpdateGameUrl(id),
+-+  {
+-+    ...options,
+-+    method: 'PATCH',
+-+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+-+    body: JSON.stringify(updateGameRequest)
+-+  }
+-+);}
+-+
+-+
+-+
+-+
+-+export const getUpdateGameMutationOptions = <TError = ErrorType<ErrorResponse>,
+-+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateGame>>, TError,{id: string;data: BodyType<UpdateGameRequest>}, TContext>, request?: SecondParameter<typeof customFetch>}
+-+): UseMutationOptions<Awaited<ReturnType<typeof updateGame>>, TError,{id: string;data: BodyType<UpdateGameRequest>}, TContext> => {
+-+
+-+const mutationKey = ['updateGame'];
+-+const {mutation: mutationOptions, request: requestOptions} = options ?
+-+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+-+      options
+-+      : {...options, mutation: {...options.mutation, mutationKey}}
+-+      : {mutation: { mutationKey, }, request: undefined};
+-+
+-+
+-+
+-+
+-+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof updateGame>>, {id: string;data: BodyType<UpdateGameRequest>}> = (props) => {
+-+          const {id,data} = props ?? {};
+-+
+-+          return  updateGame(id,data,requestOptions)
+-+        }
+-+
+-+
+-+
+-+
+-+
+-+
+-+  return  { mutationFn, ...mutationOptions }}
+-+
+-+    export type UpdateGameMutationResult = NonNullable<Awaited<ReturnType<typeof updateGame>>>
+-+    export type UpdateGameMutationBody = BodyType<UpdateGameRequest>
+-+    export type UpdateGameMutationError = ErrorType<ErrorResponse>
+-+
+-+    /**
+-+ * @summary Update a game
+-+ */
+-+export const useUpdateGame = <TError = ErrorType<ErrorResponse>,
+-+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateGame>>, TError,{id: string;data: BodyType<UpdateGameRequest>}, TContext>, request?: SecondParameter<typeof customFetch>}
+-+ ): UseMutationResult<
+-+        Awaited<ReturnType<typeof updateGame>>,
+-+        TError,
+-+        {id: string;data: BodyType<UpdateGameRequest>},
+-+        TContext
+-+      > => {
+-+      return useMutation(getUpdateGameMutationOptions(options));
+-+    }
+-+
+-+export const getDeleteGameUrl = (id: string,) => {
+-+
+-+
+-+
+-+
+-+  return `/api/games/${id}`
+-+}
+-+
+-+/**
+-+ * Hard-deletes a game when no account history exists.
+-+ * Deletion is blocked when accounts reference the game.
+-+ * @summary Delete a game
+-+ */
+-+export const deleteGame = async (id: string, options?: RequestInit): Promise<OkResponse> => {
+-+
+-+  return customFetch<OkResponse>(getDeleteGameUrl(id),
+-+  {
+-+    ...options,
+-+    method: 'DELETE'
+-+
+-+
+-+  }
+-+);}
+-+
+-+
+-+
+-+
+-+export const getDeleteGameMutationOptions = <TError = ErrorType<ErrorResponse>,
+-+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteGame>>, TError,{id: string}, TContext>, request?: SecondParameter<typeof customFetch>}
+-+): UseMutationOptions<Awaited<ReturnType<typeof deleteGame>>, TError,{id: string}, TContext> => {
+-+
+-+const mutationKey = ['deleteGame'];
+-+const {mutation: mutationOptions, request: requestOptions} = options ?
+-+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+-+      options
+-+      : {...options, mutation: {...options.mutation, mutationKey}}
+-+      : {mutation: { mutationKey, }, request: undefined};
+-+
+-+
+-+
+-+
+-+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof deleteGame>>, {id: string}> = (props) => {
+-+          const {id} = props ?? {};
+-+
+-+          return  deleteGame(id,requestOptions)
+-+        }
+-+
+-+
+-+
+-+
+-+
+-+
+-+  return  { mutationFn, ...mutationOptions }}
+-+
+-+    export type DeleteGameMutationResult = NonNullable<Awaited<ReturnType<typeof deleteGame>>>
+-+
+-+    export type DeleteGameMutationError = ErrorType<ErrorResponse>
+-+
+-+    /**
+-+ * @summary Delete a game
+-+ */
+-+export const useDeleteGame = <TError = ErrorType<ErrorResponse>,
+-+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteGame>>, TError,{id: string}, TContext>, request?: SecondParameter<typeof customFetch>}
+-+ ): UseMutationResult<
+-+        Awaited<ReturnType<typeof deleteGame>>,
+-+        TError,
+-+        {id: string},
+-+        TContext
+-+      > => {
+-+      return useMutation(getDeleteGameMutationOptions(options));
+-+    }
+-+
+-diff --git a/lib/api-spec/openapi.yaml b/lib/api-spec/openapi.yaml
+-index 3ca6b9b..63315fd 100644
+---- a/lib/api-spec/openapi.yaml
+-+++ b/lib/api-spec/openapi.yaml
+-@@ -10,6 +10,8 @@ servers:
+- tags:
+-   - name: health
+-     description: Health operations
+-+  - name: games
+-+    description: Game management operations
+- paths:
+-   /healthz:
+-     get:
+-@@ -43,6 +45,194 @@ paths:
+-             application/json:
+-               schema:
+-                 $ref: "#/components/schemas/ReadinessStatus"
+-+  /games:
+-+    get:
+-+      operationId: listGames
+-+      tags: [games]
+-+      summary: List all games
+-+      description: Returns all games, including inactive ones, with account counts.
+-+      responses:
+-+        "200":
+-+          description: Games list
+-+          content:
+-+            application/json:
+-+              schema:
+-+                $ref: "#/components/schemas/GameListResponse"
+-+        "500":
+-+          description: Internal server error
+-+          content:
+-+            application/json:
+-+              schema:
+-+                $ref: "#/components/schemas/ErrorResponse"
+-+    post:
+-+      operationId: createGame
+-+      tags: [games]
+-+      summary: Create a game
+-+      description: Creates a new game with a normalized title. Duplicate normalized titles are rejected.
+-+      requestBody:
+-+        required: true
+-+        content:
+-+          application/json:
+-+            schema:
+-+              $ref: "#/components/schemas/CreateGameRequest"
+-+      responses:
+-+        "201":
+-+          description: Game created
+-+          content:
+-+            application/json:
+-+              schema:
+-+                $ref: "#/components/schemas/GameResponse"
+-+        "400":
+-+          description: Invalid request body
+-+          content:
+-+            application/json:
+-+              schema:
+-+                $ref: "#/components/schemas/ErrorResponse"
+-+        "409":
+-+          description: Duplicate normalized title
+-+          content:
+-+            application/json:
+-+              schema:
+-+                $ref: "#/components/schemas/ErrorResponse"
+-+        "500":
+-+          description: Internal server error
+-+          content:
+-+            application/json:
+-+              schema:
+-+                $ref: "#/components/schemas/ErrorResponse"
+-+  /games/{id}:
+-+    get:
+-+      operationId: getGame
+-+      tags: [games]
+-+      summary: Get a single game
+-+      parameters:
+-+        - name: id
+-+          in: path
+-+          required: true
+-+          schema:
+-+            type: string
+-+            format: uuid
+-+      responses:
+-+        "200":
+-+          description: Game found
+-+          content:
+-+            application/json:
+-+              schema:
+-+                $ref: "#/components/schemas/GameResponse"
+-+        "400":
+-+          description: Invalid UUID
+-+          content:
+-+            application/json:
+-+              schema:
+-+                $ref: "#/components/schemas/ErrorResponse"
+-+        "404":
+-+          description: Game not found
+-+          content:
+-+            application/json:
+-+              schema:
+-+                $ref: "#/components/schemas/ErrorResponse"
+-+        "500":
+-+          description: Internal server error
+-+          content:
+-+            application/json:
+-+              schema:
+-+                $ref: "#/components/schemas/ErrorResponse"
+-+    patch:
+-+      operationId: updateGame
+-+      tags: [games]
+-+      summary: Update a game
+-+      description: |
+-+        Updates a game's title, cover URL, status, or platform.
+-+        Platform changes are blocked once accounts exist for the game.
+-+      parameters:
+-+        - name: id
+-+          in: path
+-+          required: true
+-+          schema:
+-+            type: string
+-+            format: uuid
+-+      requestBody:
+-+        required: true
+-+        content:
+-+          application/json:
+-+            schema:
+-+              $ref: "#/components/schemas/UpdateGameRequest"
+-+      responses:
+-+        "200":
+-+          description: Game updated
+-+          content:
+-+            application/json:
+-+              schema:
+-+                $ref: "#/components/schemas/GameResponse"
+-+        "400":
+-+          description: Invalid UUID or request body
+-+          content:
+-+            application/json:
+-+              schema:
+-+                $ref: "#/components/schemas/ErrorResponse"
+-+        "404":
+-+          description: Game not found
+-+          content:
+-+            application/json:
+-+              schema:
+-+                $ref: "#/components/schemas/ErrorResponse"
+-+        "409":
+-+          description: Duplicate normalized title or platform change blocked
+-+          content:
+-+            application/json:
+-+              schema:
+-+                $ref: "#/components/schemas/ErrorResponse"
+-+        "500":
+-+          description: Internal server error
+-+          content:
+-+            application/json:
+-+              schema:
+-+                $ref: "#/components/schemas/ErrorResponse"
+-+    delete:
+-+      operationId: deleteGame
+-+      tags: [games]
+-+      summary: Delete a game
+-+      description: |
+-+        Hard-deletes a game when no account history exists.
+-+        Deletion is blocked when accounts reference the game.
+-+      parameters:
+-+        - name: id
+-+          in: path
+-+          required: true
+-+          schema:
+-+            type: string
+-+            format: uuid
+-+      responses:
+-+        "200":
+-+          description: Game deleted
+-+          content:
+-+            application/json:
+-+              schema:
+-+                $ref: "#/components/schemas/OkResponse"
+-+        "400":
+-+          description: Invalid UUID
+-+          content:
+-+            application/json:
+-+              schema:
+-+                $ref: "#/components/schemas/ErrorResponse"
+-+        "404":
+-+          description: Game not found
+-+          content:
+-+            application/json:
+-+              schema:
+-+                $ref: "#/components/schemas/ErrorResponse"
+-+        "409":
+-+          description: Game has account history and cannot be deleted
+-+          content:
+-+            application/json:
+-+              schema:
+-+                $ref: "#/components/schemas/ErrorResponse"
+-+        "500":
+-+          description: Internal server error
+-+          content:
+-+            application/json:
+-+              schema:
+-+                $ref: "#/components/schemas/ErrorResponse"
+- components:
+-   schemas:
+-     HealthStatus:
+-@@ -67,4 +257,124 @@ components:
+-       required:
+-         - status
+-         - checks
+--
+-+    GamePlatform:
+-+      type: string
+-+      enum:
+-+        - PS5_ONLY
+-+        - PS4_AND_PS5
+-+        - PS4_ONLY
+-+    GameStatus:
+-+      type: string
+-+      enum:
+-+        - ACTIVE
+-+        - INACTIVE
+-+    Game:
+-+      type: object
+-+      properties:
+-+        id:
+-+          type: string
+-+          format: uuid
+-+        title:
+-+          type: string
+-+        titleNormalized:
+-+          type: string
+-+        coverUrl:
+-+          type: string
+-+          nullable: true
+-+        platform:
+-+          $ref: "#/components/schemas/GamePlatform"
+-+        status:
+-+          $ref: "#/components/schemas/GameStatus"
+-+        createdAt:
+-+          type: string
+-+          format: date-time
+-+        updatedAt:
+-+          type: string
+-+          format: date-time
+-+        deletedAt:
+-+          type: string
+-+          format: date-time
+-+          nullable: true
+-+      required:
+-+        - id
+-+        - title
+-+        - titleNormalized
+-+        - platform
+-+        - status
+-+        - createdAt
+-+        - updatedAt
+-+    GameListItem:
+-+      allOf:
+-+        - $ref: "#/components/schemas/Game"
+-+        - type: object
+-+          properties:
+-+            accountCount:
+-+              type: integer
+-+          required:
+-+            - accountCount
+-+    GameListResponse:
+-+      type: object
+-+      properties:
+-+        games:
+-+          type: array
+-+          items:
+-+            $ref: "#/components/schemas/GameListItem"
+-+      required:
+-+        - games
+-+    GameResponse:
+-+      type: object
+-+      properties:
+-+        game:
+-+          $ref: "#/components/schemas/Game"
+-+      required:
+-+        - game
+-+    CreateGameRequest:
+-+      type: object
+-+      properties:
+-+        title:
+-+          type: string
+-+          minLength: 1
+-+          maxLength: 120
+-+        coverUrl:
+-+          type: string
+-+          format: uri
+-+        platform:
+-+          $ref: "#/components/schemas/GamePlatform"
+-+        status:
+-+          $ref: "#/components/schemas/GameStatus"
+-+      required:
+-+        - title
+-+        - platform
+-+    UpdateGameRequest:
+-+      type: object
+-+      properties:
+-+        title:
+-+          type: string
+-+          minLength: 1
+-+          maxLength: 120
+-+        coverUrl:
+-+          type: string
+-+          format: uri
+-+          nullable: true
+-+        platform:
+-+          $ref: "#/components/schemas/GamePlatform"
+-+        status:
+-+          $ref: "#/components/schemas/GameStatus"
+-+    OkResponse:
+-+      type: object
+-+      properties:
+-+        ok:
+-+          type: boolean
+-+      required:
+-+        - ok
+-+    ErrorResponse:
+-+      type: object
+-+      properties:
+-+        error:
+-+          type: string
+-+        issues:
+-+          type: array
+-+          items:
+-+            type: object
+-+      required:
+-+        - error
+-diff --git a/lib/api-zod/src/generated/api.ts b/lib/api-zod/src/generated/api.ts
+-index bc94dd6..cef69fa 100644
+---- a/lib/api-zod/src/generated/api.ts
+-+++ b/lib/api-zod/src/generated/api.ts
+-@@ -29,3 +29,125 @@ export const ReadinessCheckResponse = zod.object({
+- })
+- 
+- 
+-+/**
+-+ * Returns all games, including inactive ones, with account counts.
+-+ * @summary List all games
+-+ */
+-+export const ListGamesResponse = zod.object({
+-+  "games": zod.array(zod.object({
+-+  "id": zod.string().uuid(),
+-+  "title": zod.string(),
+-+  "titleNormalized": zod.string(),
+-+  "coverUrl": zod.string().nullish(),
+-+  "platform": zod.enum(['PS5_ONLY', 'PS4_AND_PS5', 'PS4_ONLY']),
+-+  "status": zod.enum(['ACTIVE', 'INACTIVE']),
+-+  "createdAt": zod.coerce.date(),
+-+  "updatedAt": zod.coerce.date(),
+-+  "deletedAt": zod.coerce.date().nullish()
+-+}).and(zod.object({
+-+  "accountCount": zod.number()
+-+})))
+-+})
+-+
+-+
+-+/**
+-+ * Creates a new game with a normalized title. Duplicate normalized titles are rejected.
+-+ * @summary Create a game
+-+ */
+-+export const createGameBodyTitleMax = 120;
+-+
+-+
+-+
+-+export const CreateGameBody = zod.object({
+-+  "title": zod.string().min(1).max(createGameBodyTitleMax),
+-+  "coverUrl": zod.string().url().optional(),
+-+  "platform": zod.enum(['PS5_ONLY', 'PS4_AND_PS5', 'PS4_ONLY']),
+-+  "status": zod.enum(['ACTIVE', 'INACTIVE']).optional()
+-+})
+-+
+-+export const CreateGameResponse = zod.object({
+-+  "game": zod.object({
+-+  "id": zod.string().uuid(),
+-+  "title": zod.string(),
+-+  "titleNormalized": zod.string(),
+-+  "coverUrl": zod.string().nullish(),
+-+  "platform": zod.enum(['PS5_ONLY', 'PS4_AND_PS5', 'PS4_ONLY']),
+-+  "status": zod.enum(['ACTIVE', 'INACTIVE']),
+-+  "createdAt": zod.coerce.date(),
+-+  "updatedAt": zod.coerce.date(),
+-+  "deletedAt": zod.coerce.date().nullish()
+-+})
+-+})
+-+
+-+
+-+/**
+-+ * @summary Get a single game
+-+ */
+-+export const GetGameParams = zod.object({
+-+  "id": zod.coerce.string().uuid()
+-+})
+-+
+-+export const GetGameResponse = zod.object({
+-+  "game": zod.object({
+-+  "id": zod.string().uuid(),
+-+  "title": zod.string(),
+-+  "titleNormalized": zod.string(),
+-+  "coverUrl": zod.string().nullish(),
+-+  "platform": zod.enum(['PS5_ONLY', 'PS4_AND_PS5', 'PS4_ONLY']),
+-+  "status": zod.enum(['ACTIVE', 'INACTIVE']),
+-+  "createdAt": zod.coerce.date(),
+-+  "updatedAt": zod.coerce.date(),
+-+  "deletedAt": zod.coerce.date().nullish()
+-+})
+-+})
+-+
+-+
+-+/**
+-+ * Updates a game's title, cover URL, status, or platform.
+-+ * Platform changes are blocked once accounts exist for the game.
+-+ * @summary Update a game
+-+ */
+-+export const UpdateGameParams = zod.object({
+-+  "id": zod.coerce.string().uuid()
+-+})
+-+
+-+export const updateGameBodyTitleMax = 120;
+-+
+-+
+-+
+-+export const UpdateGameBody = zod.object({
+-+  "title": zod.string().min(1).max(updateGameBodyTitleMax).optional(),
+-+  "coverUrl": zod.string().url().nullish(),
+-+  "platform": zod.enum(['PS5_ONLY', 'PS4_AND_PS5', 'PS4_ONLY']).optional(),
+-+  "status": zod.enum(['ACTIVE', 'INACTIVE']).optional()
+-+})
+-+
+-+export const UpdateGameResponse = zod.object({
+-+  "game": zod.object({
+-+  "id": zod.string().uuid(),
+-+  "title": zod.string(),
+-+  "titleNormalized": zod.string(),
+-+  "coverUrl": zod.string().nullish(),
+-+  "platform": zod.enum(['PS5_ONLY', 'PS4_AND_PS5', 'PS4_ONLY']),
+-+  "status": zod.enum(['ACTIVE', 'INACTIVE']),
+-+  "createdAt": zod.coerce.date(),
+-+  "updatedAt": zod.coerce.date(),
+-+  "deletedAt": zod.coerce.date().nullish()
+-+})
+-+})
+-+
+-+
+-+/**
+-+ * Hard-deletes a game when no account history exists.
+-+ * Deletion is blocked when accounts reference the game.
+-+ * @summary Delete a game
+-+ */
+-+export const DeleteGameParams = zod.object({
+-+  "id": zod.coerce.string().uuid()
+-+})
+-+
+-+export const DeleteGameResponse = zod.object({
+-+  "ok": zod.boolean()
+-+})
+-+
+-+
+-diff --git a/lib/api-zod/src/generated/types/createGameRequest.ts b/lib/api-zod/src/generated/types/createGameRequest.ts
+-new file mode 100644
+-index 0000000..3c019f9
+---- /dev/null
+-+++ b/lib/api-zod/src/generated/types/createGameRequest.ts
+-@@ -0,0 +1,20 @@
+-+/**
+-+ * Generated by orval v8.18.0 🍺
+-+ * Do not edit manually.
+-+ * Api
+-+ * API specification
+-+ * OpenAPI spec version: 0.1.0
+-+ */
+-+import type { GamePlatform } from './gamePlatform';
+-+import type { GameStatus } from './gameStatus';
+-+
+-+export interface CreateGameRequest {
+-+  /**
+-+     * @minLength 1
+-+     * @maxLength 120
+-+     */
+-+  title: string;
+-+  coverUrl?: string;
+-+  platform: GamePlatform;
+-+  status?: GameStatus;
+-+}
+-diff --git a/lib/api-zod/src/generated/types/errorResponse.ts b/lib/api-zod/src/generated/types/errorResponse.ts
+-new file mode 100644
+-index 0000000..dba433c
+---- /dev/null
+-+++ b/lib/api-zod/src/generated/types/errorResponse.ts
+-@@ -0,0 +1,13 @@
+-+/**
+-+ * Generated by orval v8.18.0 🍺
+-+ * Do not edit manually.
+-+ * Api
+-+ * API specification
+-+ * OpenAPI spec version: 0.1.0
+-+ */
+-+import type { ErrorResponseIssuesItem } from './errorResponseIssuesItem';
+-+
+-+export interface ErrorResponse {
+-+  error: string;
+-+  issues?: ErrorResponseIssuesItem[];
+-+}
+-diff --git a/lib/api-zod/src/generated/types/errorResponseIssuesItem.ts b/lib/api-zod/src/generated/types/errorResponseIssuesItem.ts
+-new file mode 100644
+-index 0000000..dd04882
+---- /dev/null
+-+++ b/lib/api-zod/src/generated/types/errorResponseIssuesItem.ts
+-@@ -0,0 +1,9 @@
+-+/**
+-+ * Generated by orval v8.18.0 🍺
+-+ * Do not edit manually.
+-+ * Api
+-+ * API specification
+-+ * OpenAPI spec version: 0.1.0
+-+ */
+-+
+-+export type ErrorResponseIssuesItem = { [key: string]: unknown };
+-diff --git a/lib/api-zod/src/generated/types/game.ts b/lib/api-zod/src/generated/types/game.ts
+-new file mode 100644
+-index 0000000..ae4fbf9
+---- /dev/null
+-+++ b/lib/api-zod/src/generated/types/game.ts
+-@@ -0,0 +1,21 @@
+-+/**
+-+ * Generated by orval v8.18.0 🍺
+-+ * Do not edit manually.
+-+ * Api
+-+ * API specification
+-+ * OpenAPI spec version: 0.1.0
+-+ */
+-+import type { GamePlatform } from './gamePlatform';
+-+import type { GameStatus } from './gameStatus';
+-+
+-+export interface Game {
+-+  id: string;
+-+  title: string;
+-+  titleNormalized: string;
+-+  coverUrl?: string | null;
+-+  platform: GamePlatform;
+-+  status: GameStatus;
+-+  createdAt: Date;
+-+  updatedAt: Date;
+-+  deletedAt?: Date | null;
+-+}
+-diff --git a/lib/api-zod/src/generated/types/gameListItem.ts b/lib/api-zod/src/generated/types/gameListItem.ts
+-new file mode 100644
+-index 0000000..6701694
+---- /dev/null
+-+++ b/lib/api-zod/src/generated/types/gameListItem.ts
+-@@ -0,0 +1,12 @@
+-+/**
+-+ * Generated by orval v8.18.0 🍺
+-+ * Do not edit manually.
+-+ * Api
+-+ * API specification
+-+ * OpenAPI spec version: 0.1.0
+-+ */
+-+import type { Game } from './game';
+-+
+-+export type GameListItem = Game & {
+-+  accountCount: number;
+-+};
+-diff --git a/lib/api-zod/src/generated/types/gameListResponse.ts b/lib/api-zod/src/generated/types/gameListResponse.ts
+-new file mode 100644
+-index 0000000..d85cb3d
+---- /dev/null
+-+++ b/lib/api-zod/src/generated/types/gameListResponse.ts
+-@@ -0,0 +1,12 @@
+-+/**
+-+ * Generated by orval v8.18.0 🍺
+-+ * Do not edit manually.
+-+ * Api
+-+ * API specification
+-+ * OpenAPI spec version: 0.1.0
+-+ */
+-+import type { GameListItem } from './gameListItem';
+-+
+-+export interface GameListResponse {
+-+  games: GameListItem[];
+-+}
+-diff --git a/lib/api-zod/src/generated/types/gamePlatform.ts b/lib/api-zod/src/generated/types/gamePlatform.ts
+-new file mode 100644
+-index 0000000..102fe98
+---- /dev/null
+-+++ b/lib/api-zod/src/generated/types/gamePlatform.ts
+-@@ -0,0 +1,16 @@
+-+/**
+-+ * Generated by orval v8.18.0 🍺
+-+ * Do not edit manually.
+-+ * Api
+-+ * API specification
+-+ * OpenAPI spec version: 0.1.0
+-+ */
+-+
+-+export type GamePlatform = typeof GamePlatform[keyof typeof GamePlatform];
+-+
+-+
+-+export const GamePlatform = {
+-+  PS5_ONLY: 'PS5_ONLY',
+-+  PS4_AND_PS5: 'PS4_AND_PS5',
+-+  PS4_ONLY: 'PS4_ONLY',
+-+} as const;
+-diff --git a/lib/api-zod/src/generated/types/gameResponse.ts b/lib/api-zod/src/generated/types/gameResponse.ts
+-new file mode 100644
+-index 0000000..e8048bd
+---- /dev/null
+-+++ b/lib/api-zod/src/generated/types/gameResponse.ts
+-@@ -0,0 +1,12 @@
+-+/**
+-+ * Generated by orval v8.18.0 🍺
+-+ * Do not edit manually.
+-+ * Api
+-+ * API specification
+-+ * OpenAPI spec version: 0.1.0
+-+ */
+-+import type { Game } from './game';
+-+
+-+export interface GameResponse {
+-+  game: Game;
+-+}
+-diff --git a/lib/api-zod/src/generated/types/gameStatus.ts b/lib/api-zod/src/generated/types/gameStatus.ts
+-new file mode 100644
+-index 0000000..6566627
+---- /dev/null
+-+++ b/lib/api-zod/src/generated/types/gameStatus.ts
+-@@ -0,0 +1,15 @@
+-+/**
+-+ * Generated by orval v8.18.0 🍺
+-+ * Do not edit manually.
+-+ * Api
+-+ * API specification
+-+ * OpenAPI spec version: 0.1.0
+-+ */
+-+
+-+export type GameStatus = typeof GameStatus[keyof typeof GameStatus];
+-+
+-+
+-+export const GameStatus = {
+-+  ACTIVE: 'ACTIVE',
+-+  INACTIVE: 'INACTIVE',
+-+} as const;
+-diff --git a/lib/api-zod/src/generated/types/index.ts b/lib/api-zod/src/generated/types/index.ts
+-index ba8dd28..4906e43 100644
+---- a/lib/api-zod/src/generated/types/index.ts
+-+++ b/lib/api-zod/src/generated/types/index.ts
+-@@ -6,6 +6,17 @@
+-  * OpenAPI spec version: 0.1.0
+-  */
+- 
+-+export * from './createGameRequest';
+-+export * from './errorResponse';
+-+export * from './errorResponseIssuesItem';
+-+export * from './game';
+-+export * from './gameListItem';
+-+export * from './gameListResponse';
+-+export * from './gamePlatform';
+-+export * from './gameResponse';
+-+export * from './gameStatus';
+- export * from './healthStatus';
+-+export * from './okResponse';
+- export * from './readinessStatus';
+- export * from './readinessStatusChecks';
+-+export * from './updateGameRequest';
+-diff --git a/lib/api-zod/src/generated/types/okResponse.ts b/lib/api-zod/src/generated/types/okResponse.ts
+-new file mode 100644
+-index 0000000..5ac35bb
+---- /dev/null
+-+++ b/lib/api-zod/src/generated/types/okResponse.ts
+-@@ -0,0 +1,11 @@
+-+/**
+-+ * Generated by orval v8.18.0 🍺
+-+ * Do not edit manually.
+-+ * Api
+-+ * API specification
+-+ * OpenAPI spec version: 0.1.0
+-+ */
+-+
+-+export interface OkResponse {
+-+  ok: boolean;
+-+}
+-diff --git a/lib/api-zod/src/generated/types/updateGameRequest.ts b/lib/api-zod/src/generated/types/updateGameRequest.ts
+-new file mode 100644
+-index 0000000..1b55f08
+---- /dev/null
+-+++ b/lib/api-zod/src/generated/types/updateGameRequest.ts
+-@@ -0,0 +1,20 @@
+-+/**
+-+ * Generated by orval v8.18.0 🍺
+-+ * Do not edit manually.
+-+ * Api
+-+ * API specification
+-+ * OpenAPI spec version: 0.1.0
+-+ */
+-+import type { GamePlatform } from './gamePlatform';
+-+import type { GameStatus } from './gameStatus';
+-+
+-+export interface UpdateGameRequest {
+-+  /**
+-+     * @minLength 1
+-+     * @maxLength 120
+-+     */
+-+  title?: string;
+-+  coverUrl?: string | null;
+-+  platform?: GamePlatform;
+-+  status?: GameStatus;
+-+}
+-diff --git a/lib/db/migrations/0001_glossy_onslaught.sql b/lib/db/migrations/0001_glossy_onslaught.sql
+-new file mode 100644
+-index 0000000..40fec98
+---- /dev/null
+-+++ b/lib/db/migrations/0001_glossy_onslaught.sql
+-@@ -0,0 +1,8 @@
+-+ALTER TABLE "games" ALTER COLUMN "status" SET DATA TYPE text;--> statement-breakpoint
+-+ALTER TABLE "games" ALTER COLUMN "status" SET DEFAULT 'ACTIVE'::text;--> statement-breakpoint
+-+DROP TYPE "public"."game_status";--> statement-breakpoint
+-+CREATE TYPE "public"."game_status" AS ENUM('ACTIVE', 'INACTIVE');--> statement-breakpoint
+-+ALTER TABLE "games" ALTER COLUMN "status" SET DEFAULT 'ACTIVE'::"public"."game_status";--> statement-breakpoint
+-+ALTER TABLE "games" ALTER COLUMN "status" SET DATA TYPE "public"."game_status" USING "status"::"public"."game_status";--> statement-breakpoint
+-+ALTER TABLE "games" ADD COLUMN "title_normalized" text NOT NULL;--> statement-breakpoint
+-+CREATE UNIQUE INDEX "games_title_normalized_uniq" ON "games" USING btree ("title_normalized") WHERE "games"."deleted_at" IS NULL;
+-\ No newline at end of file
+-diff --git a/lib/db/migrations/meta/0001_snapshot.json b/lib/db/migrations/meta/0001_snapshot.json
+-new file mode 100644
+-index 0000000..27fd2ca
+---- /dev/null
+-+++ b/lib/db/migrations/meta/0001_snapshot.json
+-@@ -0,0 +1,1121 @@
+-+{
+-+  "id": "de035ed2-fa2e-4d22-b829-0a56656fbf35",
+-+  "prevId": "7d506f1d-7fed-4bbe-872e-74cea087b03a",
+-+  "version": "7",
+-+  "dialect": "postgresql",
+-+  "tables": {
+-+    "public.admins": {
+-+      "name": "admins",
+-+      "schema": "",
+-+      "columns": {
+-+        "id": {
+-+          "name": "id",
+-+          "type": "uuid",
+-+          "primaryKey": true,
+-+          "notNull": true,
+-+          "default": "gen_random_uuid()"
+-+        },
+-+        "username": {
+-+          "name": "username",
+-+          "type": "text",
+-+          "primaryKey": false,
+-+          "notNull": true
+-+        },
+-+        "password_hash": {
+-+          "name": "password_hash",
+-+          "type": "text",
+-+          "primaryKey": false,
+-+          "notNull": true
+-+        },
+-+        "status": {
+-+          "name": "status",
+-+          "type": "admin_status",
+-+          "typeSchema": "public",
+-+          "primaryKey": false,
+-+          "notNull": true,
+-+          "default": "'active'"
+-+        },
+-+        "created_at": {
+-+          "name": "created_at",
+-+          "type": "timestamp with time zone",
+-+          "primaryKey": false,
+-+          "notNull": true,
+-+          "default": "now()"
+-+        },
+-+        "updated_at": {
+-+          "name": "updated_at",
+-+          "type": "timestamp with time zone",
+-+          "primaryKey": false,
+-+          "notNull": true,
+-+          "default": "now()"
+-+        },
+-+        "deleted_at": {
+-+          "name": "deleted_at",
+-+          "type": "timestamp with time zone",
+-+          "primaryKey": false,
+-+          "notNull": false
+-+        }
+-+      },
+-+      "indexes": {},
+-+      "foreignKeys": {},
+-+      "compositePrimaryKeys": {},
+-+      "uniqueConstraints": {
+-+        "admins_username_unique": {
+-+          "name": "admins_username_unique",
+-+          "nullsNotDistinct": false,
+-+          "columns": [
+-+            "username"
+-+          ]
+-+        }
+-+      },
+-+      "policies": {},
+-+      "checkConstraints": {},
+-+      "isRLSEnabled": false
+-+    },
+-+    "public.games": {
+-+      "name": "games",
+-+      "schema": "",
+-+      "columns": {
+-+        "id": {
+-+          "name": "id",
+-+          "type": "uuid",
+-+          "primaryKey": true,
+-+          "notNull": true,
+-+          "default": "gen_random_uuid()"
+-+        },
+-+        "title": {
+-+          "name": "title",
+-+          "type": "text",
+-+          "primaryKey": false,
+-+          "notNull": true
+-+        },
+-+        "title_normalized": {
+-+          "name": "title_normalized",
+-+          "type": "text",
+-+          "primaryKey": false,
+-+          "notNull": true
+-+        },
+-+        "cover_url": {
+-+          "name": "cover_url",
+-+          "type": "text",
+-+          "primaryKey": false,
+-+          "notNull": false
+-+        },
+-+        "platform": {
+-+          "name": "platform",
+-+          "type": "game_platform",
+-+          "typeSchema": "public",
+-+          "primaryKey": false,
+-+          "notNull": true
+-+        },
+-+        "status": {
+-+          "name": "status",
+-+          "type": "game_status",
+-+          "typeSchema": "public",
+-+          "primaryKey": false,
+-+          "notNull": true,
+-+          "default": "'ACTIVE'"
+-+        },
+-+        "created_at": {
+-+          "name": "created_at",
+-+          "type": "timestamp with time zone",
+-+          "primaryKey": false,
+-+          "notNull": true,
+-+          "default": "now()"
+-+        },
+-+        "updated_at": {
+-+          "name": "updated_at",
+-+          "type": "timestamp with time zone",
+-+          "primaryKey": false,
+-+          "notNull": true,
+-+          "default": "now()"
+-+        },
+-+        "deleted_at": {
+-+          "name": "deleted_at",
+-+          "type": "timestamp with time zone",
+-+          "primaryKey": false,
+-+          "notNull": false
+-+        }
+-+      },
+-+      "indexes": {
+-+        "games_status_idx": {
+-+          "name": "games_status_idx",
+-+          "columns": [
+-+            {
+-+              "expression": "status",
+-+              "isExpression": false,
+-+              "asc": true,
+-+              "nulls": "last"
+-+            }
+-+          ],
+-+          "isUnique": false,
+-+          "concurrently": false,
+-+          "method": "btree",
+-+          "with": {}
+-+        },
+-+        "games_deleted_at_idx": {
+-+          "name": "games_deleted_at_idx",
+-+          "columns": [
+-+            {
+-+              "expression": "deleted_at",
+-+              "isExpression": false,
+-+              "asc": true,
+-+              "nulls": "last"
+-+            }
+-+          ],
+-+          "isUnique": false,
+-+          "concurrently": false,
+-+          "method": "btree",
+-+          "with": {}
+-+        },
+-+        "games_title_normalized_uniq": {
+-+          "name": "games_title_normalized_uniq",
+-+          "columns": [
+-+            {
+-+              "expression": "title_normalized",
+-+              "isExpression": false,
+-+              "asc": true,
+-+              "nulls": "last"
+-+            }
+-+          ],
+-+          "isUnique": true,
+-+          "where": "\"games\".\"deleted_at\" IS NULL",
+-+          "concurrently": false,
+-+          "method": "btree",
+-+          "with": {}
+-+        }
+-+      },
+-+      "foreignKeys": {},
+-+      "compositePrimaryKeys": {},
+-+      "uniqueConstraints": {},
+-+      "policies": {},
+-+      "checkConstraints": {},
+-+      "isRLSEnabled": false
+-+    },
+-+    "public.accounts": {
+-+      "name": "accounts",
+-+      "schema": "",
+-+      "columns": {
+-+        "id": {
+-+          "name": "id",
+-+          "type": "uuid",
+-+          "primaryKey": true,
+-+          "notNull": true,
+-+          "default": "gen_random_uuid()"
+-+        },
+-+        "game_id": {
+-+          "name": "game_id",
+-+          "type": "uuid",
+-+          "primaryKey": false,
+-+          "notNull": true
+-+        },
+-+        "account_code": {
+-+          "name": "account_code",
+-+          "type": "text",
+-+          "primaryKey": false,
+-+          "notNull": true
+-+        },
+-+        "account_number_prefix": {
+-+          "name": "account_number_prefix",
+-+          "type": "text",
+-+          "primaryKey": false,
+-+          "notNull": true
+-+        },
+-+        "account_number_seq": {
+-+          "name": "account_number_seq",
+-+          "type": "integer",
+-+          "primaryKey": false,
+-+          "notNull": true
+-+        },
+-+        "display_number": {
+-+          "name": "display_number",
+-+          "type": "text",
+-+          "primaryKey": false,
+-+          "notNull": true
+-+        },
+-+        "email": {
+-+          "name": "email",
+-+          "type": "text",
+-+          "primaryKey": false,
+-+          "notNull": true
+-+        },
+-+        "email_normalized": {
+-+          "name": "email_normalized",
+-+          "type": "text",
+-+          "primaryKey": false,
+-+          "notNull": true
+-+        },
+-+        "playstation_password_encrypted": {
+-+          "name": "playstation_password_encrypted",
+-+          "type": "text",
+-+          "primaryKey": false,
+-+          "notNull": true
+-+        },
+-+        "email_password_encrypted": {
+-+          "name": "email_password_encrypted",
+-+          "type": "text",
+-+          "primaryKey": false,
+-+          "notNull": true
+-+        },
+-+        "family_management_email_encrypted": {
+-+          "name": "family_management_email_encrypted",
+-+          "type": "text",
+-+          "primaryKey": false,
+-+          "notNull": false
+-+        },
+-+        "online_id": {
+-+          "name": "online_id",
+-+          "type": "text",
+-+          "primaryKey": false,
+-+          "notNull": false
+-+        },
+-+        "birth_date": {
+-+          "name": "birth_date",
+-+          "type": "text",
+-+          "primaryKey": false,
+-+          "notNull": false
+-+        },
+-+        "status": {
+-+          "name": "status",
+-+          "type": "account_status",
+-+          "typeSchema": "public",
+-+          "primaryKey": false,
+-+          "notNull": true,
+-+          "default": "'active'"
+-+        },
+-+        "created_at": {
+-+          "name": "created_at",
+-+          "type": "timestamp with time zone",
+-+          "primaryKey": false,
+-+          "notNull": true,
+-+          "default": "now()"
+-+        },
+-+        "updated_at": {
+-+          "name": "updated_at",
+-+          "type": "timestamp with time zone",
+-+          "primaryKey": false,
+-+          "notNull": true,
+-+          "default": "now()"
+-+        },
+-+        "deleted_at": {
+-+          "name": "deleted_at",
+-+          "type": "timestamp with time zone",
+-+          "primaryKey": false,
+-+          "notNull": false
+-+        }
+-+      },
+-+      "indexes": {
+-+        "accounts_email_normalized_active_uniq": {
+-+          "name": "accounts_email_normalized_active_uniq",
+-+          "columns": [
+-+            {
+-+              "expression": "email_normalized",
+-+              "isExpression": false,
+-+              "asc": true,
+-+              "nulls": "last"
+-+            }
+-+          ],
+-+          "isUnique": true,
+-+          "where": "\"accounts\".\"deleted_at\" IS NULL",
+-+          "concurrently": false,
+-+          "method": "btree",
+-+          "with": {}
+-+        },
+-+        "accounts_game_id_idx": {
+-+          "name": "accounts_game_id_idx",
+-+          "columns": [
+-+            {
+-+              "expression": "game_id",
+-+              "isExpression": false,
+-+              "asc": true,
+-+              "nulls": "last"
+-+            }
+-+          ],
+-+          "isUnique": false,
+-+          "concurrently": false,
+-+          "method": "btree",
+-+          "with": {}
+-+        },
+-+        "accounts_status_idx": {
+-+          "name": "accounts_status_idx",
+-+          "columns": [
+-+            {
+-+              "expression": "status",
+-+              "isExpression": false,
+-+              "asc": true,
+-+              "nulls": "last"
+-+            }
+-+          ],
+-+          "isUnique": false,
+-+          "concurrently": false,
+-+          "method": "btree",
+-+          "with": {}
+-+        },
+-+        "accounts_deleted_at_idx": {
+-+          "name": "accounts_deleted_at_idx",
+-+          "columns": [
+-+            {
+-+              "expression": "deleted_at",
+-+              "isExpression": false,
+-+              "asc": true,
+-+              "nulls": "last"
+-+            }
+-+          ],
+-+          "isUnique": false,
+-+          "concurrently": false,
+-+          "method": "btree",
+-+          "with": {}
+-+        },
+-+        "accounts_account_code_idx": {
+-+          "name": "accounts_account_code_idx",
+-+          "columns": [
+-+            {
+-+              "expression": "account_code",
+-+              "isExpression": false,
+-+              "asc": true,
+-+              "nulls": "last"
+-+            }
+-+          ],
+-+          "isUnique": false,
+-+          "concurrently": false,
+-+          "method": "btree",
+-+          "with": {}
+-+        }
+-+      },
+-+      "foreignKeys": {
+-+        "accounts_game_id_games_id_fk": {
+-+          "name": "accounts_game_id_games_id_fk",
+-+          "tableFrom": "accounts",
+-+          "tableTo": "games",
+-+          "columnsFrom": [
+-+            "game_id"
+-+          ],
+-+          "columnsTo": [
+-+            "id"
+-+          ],
+-+          "onDelete": "no action",
+-+          "onUpdate": "no action"
+-+        }
+-+      },
+-+      "compositePrimaryKeys": {},
+-+      "uniqueConstraints": {
+-+        "accounts_account_code_unique": {
+-+          "name": "accounts_account_code_unique",
+-+          "nullsNotDistinct": false,
+-+          "columns": [
+-+            "account_code"
+-+          ]
+-+        }
+-+      },
+-+      "policies": {},
+-+      "checkConstraints": {},
+-+      "isRLSEnabled": false
+-+    },
+-+    "public.account_backup_codes": {
+-+      "name": "account_backup_codes",
+-+      "schema": "",
+-+      "columns": {
+-+        "id": {
+-+          "name": "id",
+-+          "type": "uuid",
+-+          "primaryKey": true,
+-+          "notNull": true,
+-+          "default": "gen_random_uuid()"
+-+        },
+-+        "account_id": {
+-+          "name": "account_id",
+-+          "type": "uuid",
+-+          "primaryKey": false,
+-+          "notNull": true
+-+        },
+-+        "code_encrypted": {
+-+          "name": "code_encrypted",
+-+          "type": "text",
+-+          "primaryKey": false,
+-+          "notNull": true
+-+        },
+-+        "used_at": {
+-+          "name": "used_at",
+-+          "type": "timestamp with time zone",
+-+          "primaryKey": false,
+-+          "notNull": false
+-+        },
+-+        "created_at": {
+-+          "name": "created_at",
+-+          "type": "timestamp with time zone",
+-+          "primaryKey": false,
+-+          "notNull": true,
+-+          "default": "now()"
+-+        }
+-+      },
+-+      "indexes": {
+-+        "account_backup_codes_account_id_idx": {
+-+          "name": "account_backup_codes_account_id_idx",
+-+          "columns": [
+-+            {
+-+              "expression": "account_id",
+-+              "isExpression": false,
+-+              "asc": true,
+-+              "nulls": "last"
+-+            }
+-+          ],
+-+          "isUnique": false,
+-+          "concurrently": false,
+-+          "method": "btree",
+-+          "with": {}
+-+        }
+-+      },
+-+      "foreignKeys": {
+-+        "account_backup_codes_account_id_accounts_id_fk": {
+-+          "name": "account_backup_codes_account_id_accounts_id_fk",
+-+          "tableFrom": "account_backup_codes",
+-+          "tableTo": "accounts",
+-+          "columnsFrom": [
+-+            "account_id"
+-+          ],
+-+          "columnsTo": [
+-+            "id"
+-+          ],
+-+          "onDelete": "no action",
+-+          "onUpdate": "no action"
+-+        }
+-+      },
+-+      "compositePrimaryKeys": {},
+-+      "uniqueConstraints": {},
+-+      "policies": {},
+-+      "checkConstraints": {},
+-+      "isRLSEnabled": false
+-+    },
+-+    "public.account_capacities": {
+-+      "name": "account_capacities",
+-+      "schema": "",
+-+      "columns": {
+-+        "id": {
+-+          "name": "id",
+-+          "type": "uuid",
+-+          "primaryKey": true,
+-+          "notNull": true,
+-+          "default": "gen_random_uuid()"
+-+        },
+-+        "account_id": {
+-+          "name": "account_id",
+-+          "type": "uuid",
+-+          "primaryKey": false,
+-+          "notNull": true
+-+        },
+-+        "capacity_kind": {
+-+          "name": "capacity_kind",
+-+          "type": "capacity_kind",
+-+          "typeSchema": "public",
+-+          "primaryKey": false,
+-+          "notNull": true
+-+        },
+-+        "instance_no": {
+-+          "name": "instance_no",
+-+          "type": "integer",
+-+          "primaryKey": false,
+-+          "notNull": true
+-+        },
+-+        "display_label": {
+-+          "name": "display_label",
+-+          "type": "text",
+-+          "primaryKey": false,
+-+          "notNull": true
+-+        },
+-+        "created_at": {
+-+          "name": "created_at",
+-+          "type": "timestamp with time zone",
+-+          "primaryKey": false,
+-+          "notNull": true,
+-+          "default": "now()"
+-+        }
+-+      },
+-+      "indexes": {
+-+        "account_capacities_account_id_idx": {
+-+          "name": "account_capacities_account_id_idx",
+-+          "columns": [
+-+            {
+-+              "expression": "account_id",
+-+              "isExpression": false,
+-+              "asc": true,
+-+              "nulls": "last"
+-+            }
+-+          ],
+-+          "isUnique": false,
+-+          "concurrently": false,
+-+          "method": "btree",
+-+          "with": {}
+-+        }
+-+      },
+-+      "foreignKeys": {
+-+        "account_capacities_account_id_accounts_id_fk": {
+-+          "name": "account_capacities_account_id_accounts_id_fk",
+-+          "tableFrom": "account_capacities",
+-+          "tableTo": "accounts",
+-+          "columnsFrom": [
+-+            "account_id"
+-+          ],
+-+          "columnsTo": [
+-+            "id"
+-+          ],
+-+          "onDelete": "no action",
+-+          "onUpdate": "no action"
+-+        }
+-+      },
+-+      "compositePrimaryKeys": {},
+-+      "uniqueConstraints": {
+-+        "account_capacities_unique_slot": {
+-+          "name": "account_capacities_unique_slot",
+-+          "nullsNotDistinct": false,
+-+          "columns": [
+-+            "account_id",
+-+            "capacity_kind",
+-+            "instance_no"
+-+          ]
+-+        }
+-+      },
+-+      "policies": {},
+-+      "checkConstraints": {},
+-+      "isRLSEnabled": false
+-+    },
+-+    "public.orders": {
+-+      "name": "orders",
+-+      "schema": "",
+-+      "columns": {
+-+        "id": {
+-+          "name": "id",
+-+          "type": "uuid",
+-+          "primaryKey": true,
+-+          "notNull": true,
+-+          "default": "gen_random_uuid()"
+-+        },
+-+        "order_code": {
+-+          "name": "order_code",
+-+          "type": "text",
+-+          "primaryKey": false,
+-+          "notNull": true
+-+        },
+-+        "source": {
+-+          "name": "source",
+-+          "type": "order_source",
+-+          "typeSchema": "public",
+-+          "primaryKey": false,
+-+          "notNull": true,
+-+          "default": "'manual'"
+-+        },
+-+        "status": {
+-+          "name": "status",
+-+          "type": "order_status",
+-+          "typeSchema": "public",
+-+          "primaryKey": false,
+-+          "notNull": true,
+-+          "default": "'pending_assignment'"
+-+        },
+-+        "notes": {
+-+          "name": "notes",
+-+          "type": "text",
+-+          "primaryKey": false,
+-+          "notNull": false
+-+        },
+-+        "created_at": {
+-+          "name": "created_at",
+-+          "type": "timestamp with time zone",
+-+          "primaryKey": false,
+-+          "notNull": true,
+-+          "default": "now()"
+-+        },
+-+        "updated_at": {
+-+          "name": "updated_at",
+-+          "type": "timestamp with time zone",
+-+          "primaryKey": false,
+-+          "notNull": true,
+-+          "default": "now()"
+-+        },
+-+        "deleted_at": {
+-+          "name": "deleted_at",
+-+          "type": "timestamp with time zone",
+-+          "primaryKey": false,
+-+          "notNull": false
+-+        }
+-+      },
+-+      "indexes": {
+-+        "orders_status_idx": {
+-+          "name": "orders_status_idx",
+-+          "columns": [
+-+            {
+-+              "expression": "status",
+-+              "isExpression": false,
+-+              "asc": true,
+-+              "nulls": "last"
+-+            }
+-+          ],
+-+          "isUnique": false,
+-+          "concurrently": false,
+-+          "method": "btree",
+-+          "with": {}
+-+        },
+-+        "orders_source_idx": {
+-+          "name": "orders_source_idx",
+-+          "columns": [
+-+            {
+-+              "expression": "source",
+-+              "isExpression": false,
+-+              "asc": true,
+-+              "nulls": "last"
+-+            }
+-+          ],
+-+          "isUnique": false,
+-+          "concurrently": false,
+-+          "method": "btree",
+-+          "with": {}
+-+        },
+-+        "orders_deleted_at_idx": {
+-+          "name": "orders_deleted_at_idx",
+-+          "columns": [
+-+            {
+-+              "expression": "deleted_at",
+-+              "isExpression": false,
+-+              "asc": true,
+-+              "nulls": "last"
+-+            }
+-+          ],
+-+          "isUnique": false,
+-+          "concurrently": false,
+-+          "method": "btree",
+-+          "with": {}
+-+        }
+-+      },
+-+      "foreignKeys": {},
+-+      "compositePrimaryKeys": {},
+-+      "uniqueConstraints": {
+-+        "orders_order_code_unique": {
+-+          "name": "orders_order_code_unique",
+-+          "nullsNotDistinct": false,
+-+          "columns": [
+-+            "order_code"
+-+          ]
+-+        }
+-+      },
+-+      "policies": {},
+-+      "checkConstraints": {},
+-+      "isRLSEnabled": false
+-+    },
+-+    "public.capacity_customers": {
+-+      "name": "capacity_customers",
+-+      "schema": "",
+-+      "columns": {
+-+        "id": {
+-+          "name": "id",
+-+          "type": "uuid",
+-+          "primaryKey": true,
+-+          "notNull": true,
+-+          "default": "gen_random_uuid()"
+-+        },
+-+        "capacity_id": {
+-+          "name": "capacity_id",
+-+          "type": "uuid",
+-+          "primaryKey": false,
+-+          "notNull": true
+-+        },
+-+        "order_id": {
+-+          "name": "order_id",
+-+          "type": "uuid",
+-+          "primaryKey": false,
+-+          "notNull": true
+-+        },
+-+        "customer_phone_encrypted": {
+-+          "name": "customer_phone_encrypted",
+-+          "type": "text",
+-+          "primaryKey": false,
+-+          "notNull": true
+-+        },
+-+        "customer_phone_blind_index": {
+-+          "name": "customer_phone_blind_index",
+-+          "type": "text",
+-+          "primaryKey": false,
+-+          "notNull": false
+-+        },
+-+        "status": {
+-+          "name": "status",
+-+          "type": "capacity_customer_status",
+-+          "typeSchema": "public",
+-+          "primaryKey": false,
+-+          "notNull": true,
+-+          "default": "'active'"
+-+        },
+-+        "note": {
+-+          "name": "note",
+-+          "type": "text",
+-+          "primaryKey": false,
+-+          "notNull": false
+-+        },
+-+        "created_at": {
+-+          "name": "created_at",
+-+          "type": "timestamp with time zone",
+-+          "primaryKey": false,
+-+          "notNull": true,
+-+          "default": "now()"
+-+        },
+-+        "updated_at": {
+-+          "name": "updated_at",
+-+          "type": "timestamp with time zone",
+-+          "primaryKey": false,
+-+          "notNull": true,
+-+          "default": "now()"
+-+        },
+-+        "deleted_at": {
+-+          "name": "deleted_at",
+-+          "type": "timestamp with time zone",
+-+          "primaryKey": false,
+-+          "notNull": false
+-+        }
+-+      },
+-+      "indexes": {
+-+        "capacity_customers_active_assignment_uniq": {
+-+          "name": "capacity_customers_active_assignment_uniq",
+-+          "columns": [
+-+            {
+-+              "expression": "capacity_id",
+-+              "isExpression": false,
+-+              "asc": true,
+-+              "nulls": "last"
+-+            },
+-+            {
+-+              "expression": "order_id",
+-+              "isExpression": false,
+-+              "asc": true,
+-+              "nulls": "last"
+-+            }
+-+          ],
+-+          "isUnique": true,
+-+          "where": "\"capacity_customers\".\"status\" = 'active'",
+-+          "concurrently": false,
+-+          "method": "btree",
+-+          "with": {}
+-+        },
+-+        "capacity_customers_capacity_id_idx": {
+-+          "name": "capacity_customers_capacity_id_idx",
+-+          "columns": [
+-+            {
+-+              "expression": "capacity_id",
+-+              "isExpression": false,
+-+              "asc": true,
+-+              "nulls": "last"
+-+            }
+-+          ],
+-+          "isUnique": false,
+-+          "concurrently": false,
+-+          "method": "btree",
+-+          "with": {}
+-+        },
+-+        "capacity_customers_order_id_idx": {
+-+          "name": "capacity_customers_order_id_idx",
+-+          "columns": [
+-+            {
+-+              "expression": "order_id",
+-+              "isExpression": false,
+-+              "asc": true,
+-+              "nulls": "last"
+-+            }
+-+          ],
+-+          "isUnique": false,
+-+          "concurrently": false,
+-+          "method": "btree",
+-+          "with": {}
+-+        },
+-+        "capacity_customers_status_idx": {
+-+          "name": "capacity_customers_status_idx",
+-+          "columns": [
+-+            {
+-+              "expression": "status",
+-+              "isExpression": false,
+-+              "asc": true,
+-+              "nulls": "last"
+-+            }
+-+          ],
+-+          "isUnique": false,
+-+          "concurrently": false,
+-+          "method": "btree",
+-+          "with": {}
+-+        },
+-+        "capacity_customers_phone_blind_idx": {
+-+          "name": "capacity_customers_phone_blind_idx",
+-+          "columns": [
+-+            {
+-+              "expression": "customer_phone_blind_index",
+-+              "isExpression": false,
+-+              "asc": true,
+-+              "nulls": "last"
+-+            }
+-+          ],
+-+          "isUnique": false,
+-+          "concurrently": false,
+-+          "method": "btree",
+-+          "with": {}
+-+        }
+-+      },
+-+      "foreignKeys": {
+-+        "capacity_customers_capacity_id_account_capacities_id_fk": {
+-+          "name": "capacity_customers_capacity_id_account_capacities_id_fk",
+-+          "tableFrom": "capacity_customers",
+-+          "tableTo": "account_capacities",
+-+          "columnsFrom": [
+-+            "capacity_id"
+-+          ],
+-+          "columnsTo": [
+-+            "id"
+-+          ],
+-+          "onDelete": "no action",
+-+          "onUpdate": "no action"
+-+        },
+-+        "capacity_customers_order_id_orders_id_fk": {
+-+          "name": "capacity_customers_order_id_orders_id_fk",
+-+          "tableFrom": "capacity_customers",
+-+          "tableTo": "orders",
+-+          "columnsFrom": [
+-+            "order_id"
+-+          ],
+-+          "columnsTo": [
+-+            "id"
+-+          ],
+-+          "onDelete": "no action",
+-+          "onUpdate": "no action"
+-+        }
+-+      },
+-+      "compositePrimaryKeys": {},
+-+      "uniqueConstraints": {},
+-+      "policies": {},
+-+      "checkConstraints": {},
+-+      "isRLSEnabled": false
+-+    },
+-+    "public.audit_logs": {
+-+      "name": "audit_logs",
+-+      "schema": "",
+-+      "columns": {
+-+        "id": {
+-+          "name": "id",
+-+          "type": "uuid",
+-+          "primaryKey": true,
+-+          "notNull": true,
+-+          "default": "gen_random_uuid()"
+-+        },
+-+        "admin_id": {
+-+          "name": "admin_id",
+-+          "type": "uuid",
+-+          "primaryKey": false,
+-+          "notNull": false
+-+        },
+-+        "action": {
+-+          "name": "action",
+-+          "type": "text",
+-+          "primaryKey": false,
+-+          "notNull": true
+-+        },
+-+        "entity": {
+-+          "name": "entity",
+-+          "type": "text",
+-+          "primaryKey": false,
+-+          "notNull": true
+-+        },
+-+        "entity_id": {
+-+          "name": "entity_id",
+-+          "type": "text",
+-+          "primaryKey": false,
+-+          "notNull": false
+-+        },
+-+        "before": {
+-+          "name": "before",
+-+          "type": "jsonb",
+-+          "primaryKey": false,
+-+          "notNull": false
+-+        },
+-+        "after": {
+-+          "name": "after",
+-+          "type": "jsonb",
+-+          "primaryKey": false,
+-+          "notNull": false
+-+        },
+-+        "created_at": {
+-+          "name": "created_at",
+-+          "type": "timestamp with time zone",
+-+          "primaryKey": false,
+-+          "notNull": true,
+-+          "default": "now()"
+-+        }
+-+      },
+-+      "indexes": {
+-+        "audit_logs_admin_id_idx": {
+-+          "name": "audit_logs_admin_id_idx",
+-+          "columns": [
+-+            {
+-+              "expression": "admin_id",
+-+              "isExpression": false,
+-+              "asc": true,
+-+              "nulls": "last"
+-+            }
+-+          ],
+-+          "isUnique": false,
+-+          "concurrently": false,
+-+          "method": "btree",
+-+          "with": {}
+-+        },
+-+        "audit_logs_entity_idx": {
+-+          "name": "audit_logs_entity_idx",
+-+          "columns": [
+-+            {
+-+              "expression": "entity",
+-+              "isExpression": false,
+-+              "asc": true,
+-+              "nulls": "last"
+-+            }
+-+          ],
+-+          "isUnique": false,
+-+          "concurrently": false,
+-+          "method": "btree",
+-+          "with": {}
+-+        },
+-+        "audit_logs_entity_id_idx": {
+-+          "name": "audit_logs_entity_id_idx",
+-+          "columns": [
+-+            {
+-+              "expression": "entity_id",
+-+              "isExpression": false,
+-+              "asc": true,
+-+              "nulls": "last"
+-+            }
+-+          ],
+-+          "isUnique": false,
+-+          "concurrently": false,
+-+          "method": "btree",
+-+          "with": {}
+-+        },
+-+        "audit_logs_created_at_idx": {
+-+          "name": "audit_logs_created_at_idx",
+-+          "columns": [
+-+            {
+-+              "expression": "created_at",
+-+              "isExpression": false,
+-+              "asc": true,
+-+              "nulls": "last"
+-+            }
+-+          ],
+-+          "isUnique": false,
+-+          "concurrently": false,
+-+          "method": "btree",
+-+          "with": {}
+-+        }
+-+      },
+-+      "foreignKeys": {
+-+        "audit_logs_admin_id_admins_id_fk": {
+-+          "name": "audit_logs_admin_id_admins_id_fk",
+-+          "tableFrom": "audit_logs",
+-+          "tableTo": "admins",
+-+          "columnsFrom": [
+-+            "admin_id"
+-+          ],
+-+          "columnsTo": [
+-+            "id"
+-+          ],
+-+          "onDelete": "no action",
+-+          "onUpdate": "no action"
+-+        }
+-+      },
+-+      "compositePrimaryKeys": {},
+-+      "uniqueConstraints": {},
+-+      "policies": {},
+-+      "checkConstraints": {},
+-+      "isRLSEnabled": false
+-+    }
+-+  },
+-+  "enums": {
+-+    "public.account_status": {
+-+      "name": "account_status",
+-+      "schema": "public",
+-+      "values": [
+-+        "active",
+-+        "disabled"
+-+      ]
+-+    },
+-+    "public.admin_status": {
+-+      "name": "admin_status",
+-+      "schema": "public",
+-+      "values": [
+-+        "active",
+-+        "inactive"
+-+      ]
+-+    },
+-+    "public.capacity_customer_status": {
+-+      "name": "capacity_customer_status",
+-+      "schema": "public",
+-+      "values": [
+-+        "active",
+-+        "removed",
+-+        "cancelled"
+-+      ]
+-+    },
+-+    "public.capacity_kind": {
+-+      "name": "capacity_kind",
+-+      "schema": "public",
+-+      "values": [
+-+        "Z2_PS5",
+-+        "Z2_PS4",
+-+        "Z3_PS5"
+-+      ]
+-+    },
+-+    "public.capacity_platform": {
+-+      "name": "capacity_platform",
+-+      "schema": "public",
+-+      "values": [
+-+        "PS4",
+-+        "PS5"
+-+      ]
+-+    },
+-+    "public.game_platform": {
+-+      "name": "game_platform",
+-+      "schema": "public",
+-+      "values": [
+-+        "PS5_ONLY",
+-+        "PS4_AND_PS5",
+-+        "PS4_ONLY"
+-+      ]
+-+    },
+-+    "public.game_status": {
+-+      "name": "game_status",
+-+      "schema": "public",
+-+      "values": [
+-+        "ACTIVE",
+-+        "INACTIVE"
+-+      ]
+-+    },
+-+    "public.order_source": {
+-+      "name": "order_source",
+-+      "schema": "public",
+-+      "values": [
+-+        "manual",
+-+        "woocommerce",
+-+        "api"
+-+      ]
+-+    },
+-+    "public.order_status": {
+-+      "name": "order_status",
+-+      "schema": "public",
+-+      "values": [
+-+        "pending_assignment",
+-+        "assigned",
+-+        "delivered",
+-+        "failed",
+-+        "cancelled"
+-+      ]
+-+    }
+-+  },
+-+  "schemas": {},
+-+  "sequences": {},
+-+  "roles": {},
+-+  "policies": {},
+-+  "views": {},
+-+  "_meta": {
+-+    "columns": {},
+-+    "schemas": {},
+-+    "tables": {}
+-+  }
+-+}
+-\ No newline at end of file
+-diff --git a/lib/db/migrations/meta/_journal.json b/lib/db/migrations/meta/_journal.json
+-index 9315ce7..165797f 100644
+---- a/lib/db/migrations/meta/_journal.json
+-+++ b/lib/db/migrations/meta/_journal.json
+-@@ -8,6 +8,13 @@
+-       "when": 1784046823691,
+-       "tag": "0000_zippy_leech",
+-       "breakpoints": true
+-+    },
+-+    {
+-+      "idx": 1,
+-+      "version": "7",
+-+      "when": 1784109971200,
+-+      "tag": "0001_glossy_onslaught",
+-+      "breakpoints": true
+-     }
+-   ]
+- }
+-\ No newline at end of file
+-diff --git a/lib/db/package.json b/lib/db/package.json
+-index 3f8a73a..08377f3 100644
+---- a/lib/db/package.json
+-+++ b/lib/db/package.json
+-@@ -12,6 +12,7 @@
+-     "db:generate": "drizzle-kit generate --config ./drizzle.config.ts",
+-     "db:migrate": "drizzle-kit migrate --config ./drizzle.config.ts",
+-     "db:check": "drizzle-kit check --config ./drizzle.config.ts",
+-+    "test": "node --test src/helpers/*.test.ts",
+-     "push": "drizzle-kit push --config ./drizzle.config.ts",
+-     "push-force": "drizzle-kit push --force --config ./drizzle.config.ts"
+-   },
+-diff --git a/lib/db/src/helpers/index.ts b/lib/db/src/helpers/index.ts
+-index a698d54..e771301 100644
+---- a/lib/db/src/helpers/index.ts
+-+++ b/lib/db/src/helpers/index.ts
+-@@ -1,3 +1,4 @@
+- export * from "./order-code";
+- export * from "./account-number";
+- export * from "./capacity-definitions";
+-+export * from "./title-normalizer";
+-diff --git a/lib/db/src/helpers/title-normalizer.test.ts b/lib/db/src/helpers/title-normalizer.test.ts
+-new file mode 100644
+-index 0000000..cb1a964
+---- /dev/null
+-+++ b/lib/db/src/helpers/title-normalizer.test.ts
+-@@ -0,0 +1,37 @@
+-+import { describe, it } from "node:test";
+-+import assert from "node:assert";
+-+import { normalizeGameTitle } from "./title-normalizer.ts";
+-+
+-+describe("normalizeGameTitle", () => {
+-+  it("trims surrounding whitespace", () => {
+-+    assert.strictEqual(normalizeGameTitle(" fc 26 "), "fc 26");
+-+  });
+-+
+-+  it("collapses repeated internal whitespace to one space", () => {
+-+    assert.strictEqual(normalizeGameTitle("FC   26"), "fc 26");
+-+  });
+-+
+-+  it("lowercases for case-insensitive duplicate detection", () => {
+-+    assert.strictEqual(normalizeGameTitle("FC 26"), "fc 26");
+-+  });
+-+
+-+  it("makes equivalent titles collide", () => {
+-+    const base = normalizeGameTitle("FC 26");
+-+    const spaced = normalizeGameTitle(" fc 26 ");
+-+    const multiSpaced = normalizeGameTitle("FC   26");
+-+    assert.strictEqual(base, spaced);
+-+    assert.strictEqual(spaced, multiSpaced);
+-+  });
+-+
+-+  it("keeps distinct editions distinct", () => {
+-+    assert.notStrictEqual(
+-+      normalizeGameTitle("FC 26"),
+-+      normalizeGameTitle("FC 26 Ultimate Edition"),
+-+    );
+-+  });
+-+
+-+  it("collapses tabs and newlines", () => {
+-+    assert.strictEqual(normalizeGameTitle("FC\t\t26"), "fc 26");
+-+    assert.strictEqual(normalizeGameTitle("FC\n26"), "fc 26");
+-+  });
+-+});
+-diff --git a/lib/db/src/helpers/title-normalizer.ts b/lib/db/src/helpers/title-normalizer.ts
+-new file mode 100644
+-index 0000000..d4f12b0
+---- /dev/null
+-+++ b/lib/db/src/helpers/title-normalizer.ts
+-@@ -0,0 +1,20 @@
+-+/**
+-+ * normalizeGameTitle — canonical server-side title normalization for Games.
+-+ *
+-+ * Rules:
+-+ * - trim surrounding whitespace
+-+ * - collapse repeated internal whitespace to one space
+-+ * - lowercase for case-insensitive duplicate detection
+-+ *
+-+ * Examples:
+-+ *   "FC 26"      → "fc 26"
+-+ *   " fc 26 "    → "fc 26"
+-+ *   "FC   26"    → "fc 26"
+-+ *   "FC 26 Ultimate Edition" → "fc 26 ultimate edition"
+-+ */
+-+export function normalizeGameTitle(input: string): string {
+-+  return input
+-+    .trim()
+-+    .replace(/\s+/g, " ")
+-+    .toLowerCase();
+-+}
+-diff --git a/lib/db/src/schema/enums.ts b/lib/db/src/schema/enums.ts
+-index 0066344..6b1c9bf 100644
+---- a/lib/db/src/schema/enums.ts
+-+++ b/lib/db/src/schema/enums.ts
+-@@ -6,7 +6,7 @@ export const gamePlatformEnum = pgEnum("game_platform", [
+-   "PS4_ONLY",
+- ]);
+- 
+--export const gameStatusEnum = pgEnum("game_status", ["active", "inactive"]);
+-+export const gameStatusEnum = pgEnum("game_status", ["ACTIVE", "INACTIVE"]);
+- 
+- export const accountStatusEnum = pgEnum("account_status", [
+-   "active",
+-diff --git a/lib/db/src/schema/games.ts b/lib/db/src/schema/games.ts
+-index fd984bf..0ae94cb 100644
+---- a/lib/db/src/schema/games.ts
+-+++ b/lib/db/src/schema/games.ts
+-@@ -1,4 +1,5 @@
+--import { index, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+-+import { index, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+-+import { sql } from "drizzle-orm";
+- import { gamePlatformEnum, gameStatusEnum } from "./enums";
+- 
+- export const gamesTable = pgTable(
+-@@ -6,9 +7,10 @@ export const gamesTable = pgTable(
+-   {
+-     id: uuid("id").primaryKey().defaultRandom(),
+-     title: text("title").notNull(),
+-+    titleNormalized: text("title_normalized").notNull(),
+-     coverUrl: text("cover_url"),
+-     platform: gamePlatformEnum("platform").notNull(),
+--    status: gameStatusEnum("status").notNull().default("active"),
+-+    status: gameStatusEnum("status").notNull().default("ACTIVE"),
+-     createdAt: timestamp("created_at", { withTimezone: true })
+-       .notNull()
+-       .defaultNow(),
+-@@ -20,6 +22,9 @@ export const gamesTable = pgTable(
+-   (t) => [
+-     index("games_status_idx").on(t.status),
+-     index("games_deleted_at_idx").on(t.deletedAt),
+-+    uniqueIndex("games_title_normalized_uniq")
+-+      .on(t.titleNormalized)
+-+      .where(sql`${t.deletedAt} IS NULL`),
+-   ],
+- );
+- 
+-diff --git a/lib/db/tsconfig.json b/lib/db/tsconfig.json
+-index 53af906..4933130 100644
+---- a/lib/db/tsconfig.json
+-+++ b/lib/db/tsconfig.json
+-@@ -6,7 +6,8 @@
+-     "emitDeclarationOnly": true,
+-     "outDir": "dist",
+-     "rootDir": "src",
+--    "types": ["node"]
+-+    "types": ["node"],
+-+    "allowImportingTsExtensions": true
+-   },
+-   "include": ["src"]
+- }
+diff --git a/lib/db/migrations/0001_glossy_onslaught.sql b/lib/db/migrations/0001_glossy_onslaught.sql
+index 40fec98..a651fff 100644
+--- a/lib/db/migrations/0001_glossy_onslaught.sql
++++ b/lib/db/migrations/0001_glossy_onslaught.sql
+@@ -1,8 +1,53 @@
+-ALTER TABLE "games" ALTER COLUMN "status" SET DATA TYPE text;--> statement-breakpoint
+-ALTER TABLE "games" ALTER COLUMN "status" SET DEFAULT 'ACTIVE'::text;--> statement-breakpoint
+-DROP TYPE "public"."game_status";--> statement-breakpoint
++-- PS-02A Games Contract migration.
++-- Safe upgrade for an existing populated database.
++
++-- 1. Migrate game_status from lowercase enum to uppercase enum safely.
++ALTER TABLE "games" ALTER COLUMN "status" DROP DEFAULT;--> statement-breakpoint
++ALTER TABLE "games" ALTER COLUMN "status" SET DATA TYPE text USING "status"::text;--> statement-breakpoint
++UPDATE "games" SET "status" = UPPER("status") WHERE "status" IN ('active', 'inactive');--> statement-breakpoint
++DROP TYPE IF EXISTS "public"."game_status";--> statement-breakpoint
+ CREATE TYPE "public"."game_status" AS ENUM('ACTIVE', 'INACTIVE');--> statement-breakpoint
+-ALTER TABLE "games" ALTER COLUMN "status" SET DEFAULT 'ACTIVE'::"public"."game_status";--> statement-breakpoint
+ ALTER TABLE "games" ALTER COLUMN "status" SET DATA TYPE "public"."game_status" USING "status"::"public"."game_status";--> statement-breakpoint
+-ALTER TABLE "games" ADD COLUMN "title_normalized" text NOT NULL;--> statement-breakpoint
+-CREATE UNIQUE INDEX "games_title_normalized_uniq" ON "games" USING btree ("title_normalized") WHERE "games"."deleted_at" IS NULL;
+\ No newline at end of file
++ALTER TABLE "games" ALTER COLUMN "status" SET DEFAULT 'ACTIVE'::"public"."game_status";--> statement-breakpoint
++
++-- 2. Add title_normalized as nullable so existing rows can be backfilled.
++ALTER TABLE "games" ADD COLUMN "title_normalized" text;--> statement-breakpoint
++
++-- 3. Clean existing display titles, backfill normalized titles, and fail loudly on conflicts.
++DO $$
++DECLARE
++    conflicting_titles text;
++BEGIN
++    -- Clean display titles: trim outer whitespace and collapse repeated internal whitespace.
++    UPDATE "games"
++    SET "title" = trim(regexp_replace("title", '\s+', ' ', 'g'))
++    WHERE "title" IS NOT NULL;
++
++    -- Populate the lowercase normalized title from the cleaned display title.
++    UPDATE "games"
++    SET "title_normalized" = lower(trim(regexp_replace("title", '\s+', ' ', 'g')))
++    WHERE "title_normalized" IS NULL;
++
++    -- Reject blank normalized titles (e.g. whitespace-only originals).
++    IF EXISTS (SELECT 1 FROM "games" WHERE "title_normalized" = '') THEN
++        RAISE EXCEPTION 'Migration failed: one or more Games have a blank or whitespace-only title after normalization';
++    END IF;
++
++    -- Detect normalized duplicate titles before creating the unique index.
++    SELECT string_agg("title_normalized", ', ' ORDER BY "title_normalized")
++    INTO conflicting_titles
++    FROM (
++        SELECT "title_normalized"
++        FROM "games"
++        GROUP BY "title_normalized"
++        HAVING count(*) > 1
++    ) dups;
++
++    IF conflicting_titles IS NOT NULL THEN
++        RAISE EXCEPTION 'Migration failed: conflicting normalized titles exist: %', conflicting_titles;
++    END IF;
++END $$;--> statement-breakpoint
++
++-- 4. Make title_normalized required and enforce global uniqueness across all rows.
++ALTER TABLE "games" ALTER COLUMN "title_normalized" SET NOT NULL;--> statement-breakpoint
++CREATE UNIQUE INDEX "games_title_normalized_uniq" ON "games" USING btree ("title_normalized");
+diff --git a/lib/db/migrations/meta/0001_snapshot.json b/lib/db/migrations/meta/0001_snapshot.json
+index 27fd2ca..3e8ea9d 100644
+--- a/lib/db/migrations/meta/0001_snapshot.json
++++ b/lib/db/migrations/meta/0001_snapshot.json
+@@ -179,7 +179,6 @@
+             }
+           ],
+           "isUnique": true,
+-          "where": "\"games\".\"deleted_at\" IS NULL",
+           "concurrently": false,
+           "method": "btree",
+           "with": {}
+diff --git a/lib/db/src/helpers/title-normalizer.test.ts b/lib/db/src/helpers/title-normalizer.test.ts
+index cb1a964..afc656c 100644
+--- a/lib/db/src/helpers/title-normalizer.test.ts
++++ b/lib/db/src/helpers/title-normalizer.test.ts
+@@ -1,37 +1,78 @@
+-import { describe, it } from "node:test";
+-import assert from "node:assert";
+-import { normalizeGameTitle } from "./title-normalizer.ts";
++import { test, describe } from "node:test";
++import assert from "node:assert/strict";
++import {
++  cleanGameTitle,
++  normalizeGameTitle,
++  prepareGameTitle,
++  GameTitleError,
++} from "./title-normalizer.ts";
++
++describe("cleanGameTitle", () => {
++  test("trims surrounding whitespace", () => {
++    assert.equal(cleanGameTitle(" fc 26 "), "fc 26");
++  });
++
++  test("collapses repeated internal whitespace to one space", () => {
++    assert.equal(cleanGameTitle("FC   26"), "FC 26");
++    assert.equal(cleanGameTitle("FC\t\t26"), "FC 26");
++    assert.equal(cleanGameTitle("FC\n\n26"), "FC 26");
++  });
++
++  test("preserves display casing", () => {
++    assert.equal(cleanGameTitle("  FC 26 Ultimate Edition  "), "FC 26 Ultimate Edition");
++  });
++
++  test("collapses tabs and newlines", () => {
++    assert.equal(cleanGameTitle("FC\t26\nUltimate"), "FC 26 Ultimate");
++  });
++});
+ 
+ describe("normalizeGameTitle", () => {
+-  it("trims surrounding whitespace", () => {
+-    assert.strictEqual(normalizeGameTitle(" fc 26 "), "fc 26");
++  test("trims surrounding whitespace", () => {
++    assert.equal(normalizeGameTitle(" fc 26 "), "fc 26");
+   });
+ 
+-  it("collapses repeated internal whitespace to one space", () => {
+-    assert.strictEqual(normalizeGameTitle("FC   26"), "fc 26");
++  test("collapses repeated internal whitespace to one space", () => {
++    assert.equal(normalizeGameTitle("FC   26"), "fc 26");
+   });
+ 
+-  it("lowercases for case-insensitive duplicate detection", () => {
+-    assert.strictEqual(normalizeGameTitle("FC 26"), "fc 26");
++  test("lowercases for case-insensitive duplicate detection", () => {
++    assert.equal(normalizeGameTitle("FC 26"), "fc 26");
+   });
+ 
+-  it("makes equivalent titles collide", () => {
+-    const base = normalizeGameTitle("FC 26");
+-    const spaced = normalizeGameTitle(" fc 26 ");
+-    const multiSpaced = normalizeGameTitle("FC   26");
+-    assert.strictEqual(base, spaced);
+-    assert.strictEqual(spaced, multiSpaced);
++  test("makes equivalent titles collide", () => {
++    assert.equal(
++      normalizeGameTitle("  FC   26  "),
++      normalizeGameTitle("fc 26"),
++    );
+   });
+ 
+-  it("keeps distinct editions distinct", () => {
+-    assert.notStrictEqual(
++  test("keeps distinct editions distinct", () => {
++    assert.notEqual(
+       normalizeGameTitle("FC 26"),
+       normalizeGameTitle("FC 26 Ultimate Edition"),
+     );
+   });
++});
++
++describe("prepareGameTitle", () => {
++  test("returns cleaned display and normalized title", () => {
++    const result = prepareGameTitle("  FC   26  ");
++    assert.equal(result.title, "FC 26");
++    assert.equal(result.titleNormalized, "fc 26");
++  });
++
++  test("throws GameTitleError for whitespace-only input", () => {
++    assert.throws(() => prepareGameTitle("   "), GameTitleError);
++    assert.throws(() => prepareGameTitle("\t\n"), GameTitleError);
++  });
++
++  test("throws GameTitleError for title over 120 characters", () => {
++    assert.throws(() => prepareGameTitle("a".repeat(121)), GameTitleError);
++  });
+ 
+-  it("collapses tabs and newlines", () => {
+-    assert.strictEqual(normalizeGameTitle("FC\t\t26"), "fc 26");
+-    assert.strictEqual(normalizeGameTitle("FC\n26"), "fc 26");
++  test("accepts a 120-character cleaned title", () => {
++    const result = prepareGameTitle("a".repeat(120));
++    assert.equal(result.title.length, 120);
+   });
+ });
+diff --git a/lib/db/src/helpers/title-normalizer.ts b/lib/db/src/helpers/title-normalizer.ts
+index d4f12b0..e0699a9 100644
+--- a/lib/db/src/helpers/title-normalizer.ts
++++ b/lib/db/src/helpers/title-normalizer.ts
+@@ -1,3 +1,21 @@
++/**
++ * cleanGameTitle — canonical server-side display-title cleaning for Games.
++ *
++ * Rules:
++ * - trim surrounding whitespace
++ * - collapse repeated internal whitespace to one space
++ * - preserve display casing
++ *
++ * Examples:
++ *   "FC 26"      → "FC 26"
++ *   " fc 26 "    → "fc 26"
++ *   "FC   26"    → "FC 26"
++ *   "FC 26 Ultimate Edition" → "FC 26 Ultimate Edition"
++ */
++export function cleanGameTitle(input: string): string {
++  return input.trim().replace(/\s+/g, " ");
++}
++
+ /**
+  * normalizeGameTitle — canonical server-side title normalization for Games.
+  *
+@@ -13,8 +31,30 @@
+  *   "FC 26 Ultimate Edition" → "fc 26 ultimate edition"
+  */
+ export function normalizeGameTitle(input: string): string {
+-  return input
+-    .trim()
+-    .replace(/\s+/g, " ")
+-    .toLowerCase();
++  return cleanGameTitle(input).toLowerCase();
++}
++
++export class GameTitleError extends Error {}
++
++/**
++ * prepareGameTitle — validates, cleans, and normalizes a Game title in one pass.
++ *
++ * Returns the cleaned display title and its lowercase normalized form.
++ * Throws GameTitleError for whitespace-only or over-length titles.
++ */
++export function prepareGameTitle(input: string): {
++  title: string;
++  titleNormalized: string;
++} {
++  const title = cleanGameTitle(input);
++  const titleNormalized = normalizeGameTitle(input);
++
++  if (titleNormalized.length === 0) {
++    throw new GameTitleError("Title cannot be blank or whitespace-only");
++  }
++  if (title.length > 120) {
++    throw new GameTitleError("Title must be at most 120 characters");
++  }
++
++  return { title, titleNormalized };
+ }
+diff --git a/lib/db/src/schema/games.ts b/lib/db/src/schema/games.ts
+index 0ae94cb..4cca76f 100644
+--- a/lib/db/src/schema/games.ts
++++ b/lib/db/src/schema/games.ts
+@@ -22,9 +22,7 @@ export const gamesTable = pgTable(
+   (t) => [
+     index("games_status_idx").on(t.status),
+     index("games_deleted_at_idx").on(t.deletedAt),
+-    uniqueIndex("games_title_normalized_uniq")
+-      .on(t.titleNormalized)
+-      .where(sql`${t.deletedAt} IS NULL`),
++    uniqueIndex("games_title_normalized_uniq").on(t.titleNormalized),
+   ],
+ );
+ 
+diff --git a/lib/db/migrations/0001_glossy_onslaught.sql b/lib/db/migrations/0001_glossy_onslaught.sql
+index 40fec98..a651fff 100644
+--- a/lib/db/migrations/0001_glossy_onslaught.sql
++++ b/lib/db/migrations/0001_glossy_onslaught.sql
+@@ -1,8 +1,53 @@
+-ALTER TABLE "games" ALTER COLUMN "status" SET DATA TYPE text;--> statement-breakpoint
+-ALTER TABLE "games" ALTER COLUMN "status" SET DEFAULT 'ACTIVE'::text;--> statement-breakpoint
+-DROP TYPE "public"."game_status";--> statement-breakpoint
++-- PS-02A Games Contract migration.
++-- Safe upgrade for an existing populated database.
++
++-- 1. Migrate game_status from lowercase enum to uppercase enum safely.
++ALTER TABLE "games" ALTER COLUMN "status" DROP DEFAULT;--> statement-breakpoint
++ALTER TABLE "games" ALTER COLUMN "status" SET DATA TYPE text USING "status"::text;--> statement-breakpoint
++UPDATE "games" SET "status" = UPPER("status") WHERE "status" IN ('active', 'inactive');--> statement-breakpoint
++DROP TYPE IF EXISTS "public"."game_status";--> statement-breakpoint
+ CREATE TYPE "public"."game_status" AS ENUM('ACTIVE', 'INACTIVE');--> statement-breakpoint
+-ALTER TABLE "games" ALTER COLUMN "status" SET DEFAULT 'ACTIVE'::"public"."game_status";--> statement-breakpoint
+ ALTER TABLE "games" ALTER COLUMN "status" SET DATA TYPE "public"."game_status" USING "status"::"public"."game_status";--> statement-breakpoint
+-ALTER TABLE "games" ADD COLUMN "title_normalized" text NOT NULL;--> statement-breakpoint
+-CREATE UNIQUE INDEX "games_title_normalized_uniq" ON "games" USING btree ("title_normalized") WHERE "games"."deleted_at" IS NULL;
+\ No newline at end of file
++ALTER TABLE "games" ALTER COLUMN "status" SET DEFAULT 'ACTIVE'::"public"."game_status";--> statement-breakpoint
++
++-- 2. Add title_normalized as nullable so existing rows can be backfilled.
++ALTER TABLE "games" ADD COLUMN "title_normalized" text;--> statement-breakpoint
++
++-- 3. Clean existing display titles, backfill normalized titles, and fail loudly on conflicts.
++DO $$
++DECLARE
++    conflicting_titles text;
++BEGIN
++    -- Clean display titles: trim outer whitespace and collapse repeated internal whitespace.
++    UPDATE "games"
++    SET "title" = trim(regexp_replace("title", '\s+', ' ', 'g'))
++    WHERE "title" IS NOT NULL;
++
++    -- Populate the lowercase normalized title from the cleaned display title.
++    UPDATE "games"
++    SET "title_normalized" = lower(trim(regexp_replace("title", '\s+', ' ', 'g')))
++    WHERE "title_normalized" IS NULL;
++
++    -- Reject blank normalized titles (e.g. whitespace-only originals).
++    IF EXISTS (SELECT 1 FROM "games" WHERE "title_normalized" = '') THEN
++        RAISE EXCEPTION 'Migration failed: one or more Games have a blank or whitespace-only title after normalization';
++    END IF;
++
++    -- Detect normalized duplicate titles before creating the unique index.
++    SELECT string_agg("title_normalized", ', ' ORDER BY "title_normalized")
++    INTO conflicting_titles
++    FROM (
++        SELECT "title_normalized"
++        FROM "games"
++        GROUP BY "title_normalized"
++        HAVING count(*) > 1
++    ) dups;
++
++    IF conflicting_titles IS NOT NULL THEN
++        RAISE EXCEPTION 'Migration failed: conflicting normalized titles exist: %', conflicting_titles;
++    END IF;
++END $$;--> statement-breakpoint
++
++-- 4. Make title_normalized required and enforce global uniqueness across all rows.
++ALTER TABLE "games" ALTER COLUMN "title_normalized" SET NOT NULL;--> statement-breakpoint
++CREATE UNIQUE INDEX "games_title_normalized_uniq" ON "games" USING btree ("title_normalized");
+ M artifacts/api-server/src/lib/test-pg.ts
+ M artifacts/api-server/src/routes/games.test.ts
+ M artifacts/api-server/src/routes/games.ts
+ D attached_assets/Pasted-Start-PS-02A-Games-Contract-and-Backend-Read-and-follow_1784109476318.txt
+ M exports/ps02a-games-backend.diff
+ M lib/db/migrations/0001_glossy_onslaught.sql
+ M lib/db/migrations/meta/0001_snapshot.json
+ M lib/db/src/helpers/title-normalizer.test.ts
+ M lib/db/src/helpers/title-normalizer.ts
+ M lib/db/src/schema/games.ts
+?? artifacts/api-server/scripts/verify-games-migration-populated.ts
+?? attached_assets/Pasted-Apply-PS-02A-Fix1-only-Do-not-start-PS-02B-and-do-not-m_1784111432384.txt
