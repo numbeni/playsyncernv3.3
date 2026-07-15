@@ -10,7 +10,7 @@ PS-02B — Stage C2B: Final Mutation Lock and Delete Integration
 
 ## Status
 
-STAGE_C2B_CODE_COMPLETE_DB_BLOCKED
+STAGE_C_READY_FOR_REVIEW
 
 ## Input Baseline
 

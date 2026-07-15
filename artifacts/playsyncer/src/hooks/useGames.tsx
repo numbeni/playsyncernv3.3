@@ -82,11 +82,11 @@ export function GamesProvider({ children }: { children: ReactNode }) {
     }));
   }, [data]);
 
-  // Synchronous ref-based locks prevent duplicate submissions even if the UI
-  // disables the button slightly late or rapid events fire across components.
-  const createLockRef = useRef(false);
-  const updateLockRef = useRef(false);
-  const deleteLockRef = useRef(false);
+  // Promise-based locks. Returning the in-flight promise means a rapid second
+  // click never looks successful; it simply awaits the same request.
+  const createPromiseRef = useRef<Promise<void> | null>(null);
+  const updatePromiseRef = useRef<Promise<void> | null>(null);
+  const deletePromiseRef = useRef<Promise<void> | null>(null);
 
   const createGame = useCreateGame();
   const updateGame = useUpdateGame();
@@ -100,56 +100,66 @@ export function GamesProvider({ children }: { children: ReactNode }) {
 
   const addGame = useCallback(
     async (data: GameFormData) => {
-      if (createLockRef.current) return;
-      createLockRef.current = true;
+      if (createPromiseRef.current) return createPromiseRef.current;
 
-      const payload: {
-        title: string;
-        platform: Platform;
-        status: GameStatus;
-        coverUrl?: string;
-      } = {
-        title: data.title.trim(),
-        platform: data.platform,
-        status: data.status,
-      };
+      const promise = (async () => {
+        const payload: {
+          title: string;
+          platform: Platform;
+          status: GameStatus;
+          coverUrl?: string;
+        } = {
+          title: data.title.trim(),
+          platform: data.platform,
+          status: data.status,
+        };
 
-      if (data.coverUrl.trim()) {
-        payload.coverUrl = data.coverUrl.trim();
-      }
+        if (data.coverUrl.trim()) {
+          payload.coverUrl = data.coverUrl.trim();
+        }
 
-      try {
-        await createGame.mutateAsync({ data: payload });
-        await syncGamesList();
-      } catch (err) {
-        throw new Error(formatApiError(err));
-      } finally {
-        createLockRef.current = false;
-      }
+        try {
+          await createGame.mutateAsync({ data: payload });
+          await syncGamesList();
+        } catch (err) {
+          throw new Error(formatApiError(err));
+        }
+      })();
+
+      createPromiseRef.current = promise;
+      promise.finally(() => {
+        createPromiseRef.current = null;
+      });
+      return promise;
     },
     [createGame, syncGamesList],
   );
 
   const editGame = useCallback(
     async (id: string, data: GameFormData) => {
-      if (updateLockRef.current) return;
-      updateLockRef.current = true;
+      if (updatePromiseRef.current) return updatePromiseRef.current;
 
-      const payload = {
-        title: data.title.trim(),
-        platform: data.platform,
-        status: data.status,
-        coverUrl: data.coverUrl.trim() ? data.coverUrl.trim() : null,
-      };
+      const promise = (async () => {
+        const payload = {
+          title: data.title.trim(),
+          platform: data.platform,
+          status: data.status,
+          coverUrl: data.coverUrl.trim() ? data.coverUrl.trim() : null,
+        };
 
-      try {
-        await updateGame.mutateAsync({ id, data: payload });
-        await syncGamesList();
-      } catch (err) {
-        throw new Error(formatApiError(err));
-      } finally {
-        updateLockRef.current = false;
-      }
+        try {
+          await updateGame.mutateAsync({ id, data: payload });
+          await syncGamesList();
+        } catch (err) {
+          throw new Error(formatApiError(err));
+        }
+      })();
+
+      updatePromiseRef.current = promise;
+      promise.finally(() => {
+        updatePromiseRef.current = null;
+      });
+      return promise;
     },
     [updateGame, syncGamesList],
   );
@@ -158,36 +168,47 @@ export function GamesProvider({ children }: { children: ReactNode }) {
     async (id: string) => {
       const game = games.find((g) => g.id === id);
       if (!game) return;
-      if (updateLockRef.current) return;
-      updateLockRef.current = true;
 
-      const nextStatus = game.status === "ACTIVE" ? "INACTIVE" : "ACTIVE";
+      if (updatePromiseRef.current) return updatePromiseRef.current;
 
-      try {
-        await updateGame.mutateAsync({ id, data: { status: nextStatus } });
-        await syncGamesList();
-      } catch (err) {
-        throw new Error(formatApiError(err));
-      } finally {
-        updateLockRef.current = false;
-      }
+      const promise = (async () => {
+        const nextStatus = game.status === "ACTIVE" ? "INACTIVE" : "ACTIVE";
+
+        try {
+          await updateGame.mutateAsync({ id, data: { status: nextStatus } });
+          await syncGamesList();
+        } catch (err) {
+          throw new Error(formatApiError(err));
+        }
+      })();
+
+      updatePromiseRef.current = promise;
+      promise.finally(() => {
+        updatePromiseRef.current = null;
+      });
+      return promise;
     },
     [games, updateGame, syncGamesList],
   );
 
   const deleteGame = useCallback(
     async (id: string) => {
-      if (deleteLockRef.current) return;
-      deleteLockRef.current = true;
+      if (deletePromiseRef.current) return deletePromiseRef.current;
 
-      try {
-        await deleteGameMutation.mutateAsync({ id });
-        await syncGamesList();
-      } catch (err) {
-        throw new Error(formatApiError(err, { operation: "delete" }));
-      } finally {
-        deleteLockRef.current = false;
-      }
+      const promise = (async () => {
+        try {
+          await deleteGameMutation.mutateAsync({ id });
+          await syncGamesList();
+        } catch (err) {
+          throw new Error(formatApiError(err, { operation: "delete" }));
+        }
+      })();
+
+      deletePromiseRef.current = promise;
+      promise.finally(() => {
+        deletePromiseRef.current = null;
+      });
+      return promise;
     },
     [deleteGameMutation, syncGamesList],
   );

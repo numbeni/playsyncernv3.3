@@ -33,7 +33,7 @@ export function formatApiError(error: unknown, context?: ApiErrorContext): strin
     if (status === 409) {
       // Delete-specific: backend rejected due to existing account/order history.
       if (context?.operation === "delete") {
-        return "این بازی دارای اکانت یا سفارش است و امکان حذف ندارد. می‌توانید وضعیت آن را به غیرفعال تغییر دهید.";
+        return "این بازی سابقه اکانت دارد و قابل حذف نیست. برای حفظ سوابق، بازی را غیرفعال کنید.";
       }
       const lowered = serverMessage.toLowerCase();
       if (lowered.includes("platform") || lowered.includes("پلتفرم")) {

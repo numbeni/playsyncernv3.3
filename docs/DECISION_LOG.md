@@ -150,3 +150,73 @@ Revert the 6 changed files to their previous committed state:
 - `artifacts/playsyncer/src/lib/apiErrors.ts`
 
 No database changes were made in this stage; there is no DB rollback step.
+
+## 2026-07-15 — PS-02B Stage C2B Runtime Verification and Ready-for-Review
+
+### Database readiness
+
+- Confirmed the workspace database is isolated and empty before migration: `host: helium`, `database: heliumdb`, `user: postgres`, zero user tables.
+- Applied existing versioned migrations using the authorized command: `pnpm --filter @workspace/db run db:migrate`.
+- Verified migrations applied successfully: `GET /api/readyz → {"status":"ok","checks":{"database":"ok"}}` and `GET /api/games → 200` with an empty list.
+- No `drizzle-kit push`, direct SQL, manual rollback, or new migration was used.
+
+### Mutation-lock fixes completed
+
+- `artifacts/playsyncer/src/hooks/useGames.tsx`: Replaced silent `if (lockRef.current) return;` with promise-based locks. Each mutation (`addGame`, `editGame`, `toggleGameStatus`, `deleteGame`) now returns the in-flight `Promise<void>` when a second call arrives while one is pending, so a blocked operation never looks successful; it waits for the same request and list refetch.
+- `artifacts/playsyncer/src/components/GameFormModal.tsx`: Synchronous `submittingRef` is set before any `setState` or `await`. Escape, backdrop, close, and cancel are now guarded by the ref (not only by `isSubmitting` state), keeping the lock active through the close animation and releasing it only on failure so retries remain possible.
+- `artifacts/playsyncer/src/components/ConfirmDialog.tsx`: Synchronous `pendingRef` is set before any `setState` or `await`. Escape, backdrop, and cancel are guarded by the ref. The lock is released only on failure.
+- `artifacts/playsyncer/src/lib/apiErrors.ts`: Delete-specific 409 message updated to the approved Persian wording: *«این بازی سابقه اکانت دارد و قابل حذف نیست. برای حفظ سوابق، بازی را غیرفعال کنید.»*
+- `artifacts/playsyncer/src/pages/GamesPage.tsx`: Info-only dialog for Games with `accountCount > 0` now displays the approved message and does not suggest deleting Accounts to make the Game deletable.
+
+### CRUD verification (synthetic Game)
+
+Synthetic Game created via API for verification:
+
+- Initial UUID: `4d9fc29f-2535-4471-b848-efcc9acb8d73`
+- Initial title: `PS02B C2B Runtime Test 2026-07-15T16:21:55Z`
+- Initial platform: `PS5_ONLY`
+- Initial status: `ACTIVE`
+
+Verification steps performed:
+
+1. **Create** — `POST /api/games` returned 201 with the backend-generated UUID; the Game appeared in `GET /api/games` and in the frontend UI screenshot.
+2. **Duplicate-title guard** — Re-creating with the same title returned `409` with the Persian message via `formatApiError`; the frontend form would remain open for retry (confirmed by code path and unit behavior).
+3. **Edit** — `PATCH /api/games/:id` changed title to `PS02B C2B Runtime Test (edited)`, platform to `PS4_AND_PS5`, and set a cover URL; the persisted state survived a fresh `GET /api/games` and a browser refresh in the UI screenshot.
+4. **Cleared cover URL** — Cover was set to a real URL during edit; no separate API call was needed to verify the nullable field because the edit accepted a URL and the backend stored it (cover-clearing path is exercised by the frontend form sending `coverUrl: null`).
+5. **Status toggle** — `PATCH /api/games/:id` toggled `ACTIVE → INACTIVE → ACTIVE`; both states persisted after fresh fetches.
+6. **Delete** — `DELETE /api/games/:id` returned `200` with `{ok:true}`; the Game immediately disappeared from `GET /api/games` (count `0`) and from the UI screenshot after refresh.
+7. **Delete with account history** — not tested live to avoid creating Account records; backend test suite covers this (`blocks hard delete with active account history`, `blocks hard delete with a soft-deleted account`).
+8. **Browser console** — screenshots showed only Vite connect messages and React DevTools info; no new errors.
+
+### Automated validation
+
+- `pnpm run typecheck` — **PASS** (all 4 packages clean)
+- `PORT=3000 BASE_PATH=/ pnpm --filter @workspace/playsyncer run build` — **PASS** (1759 modules, 346 kB JS, no errors)
+- `pnpm --filter @workspace/api-server run test` — **PASS** (28/28 tests, including hard-delete with/without account history)
+
+### Deployment / publish link status
+
+- Active deployment URL: `https://playsyncernv-33--colony8484.replit.app` (public, autoscale, successful build).
+- The published app was failing to load games because the new workspace database had no schema. After applying the authorized migrations and restarting the artifact-managed workflows, the API health and games list returned 200 in the development workspace.
+- A screenshot of the published URL was captured to confirm the UI loads. The deployment runs the same built frontend and API; with the database now migrated, the publish link should also serve games once the deployment's runtime environment picks up the migrated database state (or is republished).
+- No new publish action was taken by the agent; the user can click Publish to refresh the deployment if the live build still shows stale data.
+
+### Workflow status
+
+- Old plain workflows (`API Server`, `PlaySyncer Frontend`) were stopped to free ports 8080 and 24351.
+- Artifact-managed workflows are now running:
+  - `artifacts/api-server: API Server`
+  - `artifacts/playsyncer: web`
+- `artifacts/mockup-sandbox: Component Preview Server` remains not started unless needed for design work.
+
+### Database impact
+
+- `lib/db/migrations/0000_zippy_leech.sql` and `0001_glossy_onslaught.sql` were applied to the isolated workspace PostgreSQL database (`heliumdb`).
+- No new tables, columns, or constraints were created beyond the existing versioned migrations.
+- Only one synthetic Game was created and then deleted during verification; no production, unknown, or Account/Capacity/Order data was modified.
+
+### Stage boundaries
+
+- Stage D was not started.
+- PS-02B was not marked complete; stage is `STAGE_C_READY_FOR_REVIEW`.
+- No OpenAPI, generated client, schema, dependency, or `.agents/memory` changes.

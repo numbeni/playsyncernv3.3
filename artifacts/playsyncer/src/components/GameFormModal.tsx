@@ -114,7 +114,7 @@ export function GameFormModal({ open, mode, initial, onSave, onClose }: Props) {
     if (!open) return;
 
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !isSubmitting) requestClose();
+      if (e.key === "Escape" && !submittingRef.current) requestClose();
     };
 
     document.addEventListener("keydown", handler);
@@ -185,7 +185,7 @@ export function GameFormModal({ open, mode, initial, onSave, onClose }: Props) {
           "absolute inset-0 bg-background/80 backdrop-blur-sm transition-opacity duration-300 ease-out",
           entered ? "opacity-100" : "opacity-0",
         )}
-        onClick={isSubmitting ? undefined : requestClose}
+        onClick={submittingRef.current ? undefined : requestClose}
       />
 
       <div
@@ -224,7 +224,7 @@ export function GameFormModal({ open, mode, initial, onSave, onClose }: Props) {
 
           <button
             type="button"
-            onClick={isSubmitting ? undefined : requestClose}
+            onClick={submittingRef.current ? undefined : requestClose}
             disabled={isSubmitting}
             className="grid h-9 w-9 shrink-0 place-items-center rounded-xl text-muted-foreground hover:bg-accent transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             aria-label="بستن"
@@ -364,7 +364,7 @@ export function GameFormModal({ open, mode, initial, onSave, onClose }: Props) {
           >
             <button
               type="button"
-              onClick={isSubmitting ? undefined : requestClose}
+              onClick={submittingRef.current ? undefined : requestClose}
               disabled={isSubmitting}
               className="inline-flex items-center justify-center rounded-xl border border-border bg-card px-4 py-3 text-sm font-medium text-foreground hover:bg-accent transition-colors disabled:opacity-50 disabled:cursor-not-allowed sm:py-2"
             >
