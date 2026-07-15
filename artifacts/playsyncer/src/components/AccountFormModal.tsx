@@ -200,8 +200,7 @@ export function AccountFormModal({
     if (!validate()) return;
 
     onSave({
-      // Pass raw prefix — useGames will normalize it via resolvePrefix().
-      // Passing empty string lets the hook fall back to game title.
+      // Empty prefix lets the caller normalize to the game title.
       numberPrefix: numberPrefix.trim() || undefined,
       email: email.trim(),
       password: password.trim(),

@@ -220,3 +220,95 @@ Verification steps performed:
 - Stage D was not started.
 - PS-02B was not marked complete; stage is `STAGE_C_READY_FOR_REVIEW`.
 - No OpenAPI, generated client, schema, dependency, or `.agents/memory` changes.
+## 2026-07-15 — PS-02B Stage D: Cleanup, Regression Verification, and Phase Closure
+
+### Stage D objective
+
+- Correct the remaining Promise-lock issue in `useGames.tsx`.
+- Remove obsolete Games-only dead code from the frontend runtime path.
+- Perform final UI and API regression verification.
+- Close PS-02B with evidence and deliver the final exported package.
+
+### Code changes
+
+- `artifacts/playsyncer/src/hooks/useGames.tsx`:
+  - Replaced detached `.finally()` cleanup with an explicit `try/finally` block inside each mutation IIFE. The cleanup now lives in the same promise lifecycle, eliminating the risk of an unhandled rejection from a floating `.finally()` promise.
+  - Removed obsolete `AccountMutations` and `CapacityMutations` interfaces, no-op handlers, and unused `AccountInput`/`CustomerInput` imports. The Games context now only exposes Games mutations.
+- `artifacts/playsyncer/src/domain/games/types.ts`: Removed unused optional fields (`titleNormalized`, `createdAt`, `updatedAt`, `deletedAt`) from the internal `Game` domain type.
+- `artifacts/playsyncer/src/domain/games/stats.ts`: Deleted — `getGameStats`/`GameStats` were no longer referenced anywhere.
+- `artifacts/playsyncer/src/mocks/playSyncerMockData.ts`: Deleted — the legacy `games` array and helper code were no longer referenced in the frontend and are no longer the runtime authority for Games.
+- `artifacts/playsyncer/src/components/AccountFormModal.tsx`: Removed stale `resolvePrefix()` comment; the `numberPrefix` is passed raw and normalized by the caller.
+- `artifacts/playsyncer/src/components/GameCard.tsx`: Removed stage-specific comment from the stats row.
+- `artifacts/playsyncer/src/pages/GamesPage.tsx`: Removed stage-specific comment from the overview stats section.
+
+### Promise-lock correction
+
+- Before: lock cleanup was performed in a detached promise returned by `Promise.prototype.finally()`. When the mutation promise rejected, that detached promise could also reject and become an unhandled rejection.
+- After: lock cleanup is performed in a `finally` block inside the same async IIFE that owns the mutation. The same promise object is returned to concurrent callers, rejected mutations re-throw the formatted error to the caller, and the lock is always cleared regardless of success or failure.
+
+### Dead-code and mock cleanup summary
+
+- Removed local-only Games mutation stubs and no-op Account/Capacity handlers from `useGames.tsx`.
+- Removed the legacy `playSyncerMockData.ts` file and its `LegacyGame` / `games` array, which previously served as the Games runtime authority in earlier stages.
+- Removed the unused `domain/games/stats.ts` module.
+- Pruned stale comments referencing Stage B/C no-op logic.
+- Did **not** delete Account or Capacity components, and did **not** connect legacy Account mock data to backend Games.
+
+### Final CRUD regression evidence
+
+- Synthetic CRUD Game: `fd5a4cf7-fba6-4e06-b8a5-33c5f3fa61cf` (title: `PS02B Stage D Test 2026-07-15T16:34:26Z`)
+  - Created via `POST /api/games` → 201.
+  - Duplicate title rejected with `409` and Persian error message.
+  - Edited via `PATCH /api/games/:id` (title, platform, cover URL).
+  - Cleared cover URL via `PATCH /api/games/:id` (`coverUrl: null`).
+  - Status toggled `ACTIVE → INACTIVE → ACTIVE`, both states persisted.
+  - Deleted via `DELETE /api/games/:id` → `200 {ok:true}`.
+  - Verified list empty after deletion (`GET /api/games` → `{"games":[]}`).
+- Synthetic detail Game: `c4971d2b-7ff5-40a8-9ac7-66ecd1e44e7f` (title: `PS02B Stage D Detail 2026-07-15T16:35:21Z`)
+  - Created via `POST /api/games`.
+  - Game Detail page displayed real metadata (title, platform, status, account count).
+  - Deleted via `DELETE /api/games/:id`.
+- UI screenshots captured for each stage: empty list, created, edited, cleared cover, inactive, active again, deleted, and detail page.
+
+### Error and rapid-click evidence
+
+- `GameFormModal` and `ConfirmDialog` retain synchronous `useRef` locks set before any `setState` or `await`.
+- Escape, backdrop, close, and cancel handlers are disabled while the lock is held.
+- `useGames` returns the in-flight promise for concurrent calls, so rapid clicks cannot produce a second logical mutation.
+- Failed mutations re-throw a Persian-safe error and keep the modal or dialog open for retry.
+- Browser console review showed no new errors or unhandled Promise rejections during any screenshot.
+
+### Automated validation
+
+- `pnpm run typecheck` — **PASS** (all packages clean).
+- `PORT=3000 BASE_PATH=/ pnpm --filter @workspace/playsyncer run build` — **PASS** (1759 modules, no errors).
+- `pnpm --filter @workspace/api-server run test` — **PASS** (28/28 tests, including hard-delete with/without account history).
+
+### Database impact statement
+
+- No migrations, `drizzle-kit push`, direct SQL, schema changes, or rollback scripts were run in Stage D.
+- All test writes went through the existing Games API.
+- Only two synthetic Games were created and then deleted; no production, unknown, or Account/Capacity/Order data was modified.
+
+### Remaining known limitations
+
+- Account Workspace remains in the explicit pending-integration state.
+- Capacity, Orders, Game Import, Authentication, and RBAC are outside the PS-02B scope.
+- SmartSearch currently searches only Games.
+- The published deployment URL may still need a fresh publish from the Replit Publishing pane to pick up the migrated database state.
+
+### Rollback instructions
+
+- Revert the changed frontend files to the Stage C2B state if needed.
+- No database changes were made in Stage D; there is no DB rollback step.
+
+### Final deliverables
+
+- Exported ZIP: `playsyncer-ps02b-closed.zip`
+- SHA-256: `0d6d3c8760395fd1b574957a8a42c6db5bc9466992d1ef68b1d2c45b44b7bb07`
+
+### Stage boundaries
+
+- PS-02B is marked **COMPLETED**.
+- No next phase was started.
+- No Account, Capacity, Orders, Game Import, Authentication, or RBAC work was implemented.

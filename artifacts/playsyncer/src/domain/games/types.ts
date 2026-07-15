@@ -5,13 +5,9 @@ export type GameStatus = "ACTIVE" | "INACTIVE";
 export interface Game {
   id: string;
   title: string;
-  titleNormalized?: string;
   coverUrl: string;
   platform: Platform;
   status: GameStatus;
-  createdAt?: string;
-  updatedAt?: string;
-  deletedAt?: string | null;
   /** Backend-provided count of Accounts for this Game (read-only in PS-02B). */
   accountCount: number;
 }

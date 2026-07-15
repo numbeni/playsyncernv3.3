@@ -122,7 +122,7 @@ export default function GamesPage() {
         <SmartSearch onGameFilter={setQuery} games={games} />
       </section>
 
-      {/* Overview stats — only backend-backed metrics in Stage C1. */}
+      {/* Overview stats — backend-backed metrics only. */}
       <section className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-2">
         <OverviewStat label="کل بازی‌ها" value={totals.games} accent="primary" />
         <OverviewStat label="کل اکانت‌ها" value={totals.accounts} />

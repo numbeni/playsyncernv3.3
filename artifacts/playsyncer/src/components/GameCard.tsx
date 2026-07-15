@@ -79,7 +79,7 @@ export function GameCard({ game, onEdit, onToggleStatus, onDelete }: Props) {
         <h3 className="truncate text-base font-bold">{game.title}</h3>
       </div>
 
-      {/* Stats row — Stage C1: only backend accountCount is shown. */}
+      {/* Stats row — backend accountCount only. */}
       <div className="grid grid-cols-1 gap-2 p-4 border-b border-border">
         <Stat label="اکانت‌ها" value={game.accountCount} />
       </div>

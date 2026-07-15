@@ -15,8 +15,6 @@ import {
   getListGamesQueryKey,
 } from "@workspace/api-client-react";
 import type { Game, GameStatus, Platform } from "@/domain/games/types";
-import type { AccountInput } from "@/domain/accounts/types";
-import type { CustomerInput } from "@/domain/slots/types";
 import { formatApiError } from "@/lib/apiErrors";
 
 // ---------------------------------------------------------------------------
@@ -37,21 +35,6 @@ export interface GameMutations {
   deleteGame: (id: string) => Promise<void>;
 }
 
-export interface AccountMutations {
-  /** Stage C1: Account integration remains out of scope. */
-  addAccount: (gameId: string, data: AccountInput) => void;
-  editAccount: (gameId: string, accountId: string, data: AccountInput) => void;
-  toggleAccountStatus: (gameId: string, accountId: string) => void;
-  deleteAccount: (gameId: string, accountId: string) => void;
-}
-
-export interface CapacityMutations {
-  /** Stage C1: Capacity integration remains out of scope. */
-  addCapacityCustomer: (gameId: string, accountId: string, slotId: string, data: CustomerInput) => void;
-  editCapacityCustomer: (gameId: string, accountId: string, slotId: string, customerId: string, data: CustomerInput) => void;
-  removeCapacityCustomer: (gameId: string, accountId: string, slotId: string, customerId: string) => void;
-}
-
 interface GamesContextValue {
   games: Game[];
   isLoading: boolean;
@@ -59,8 +42,6 @@ interface GamesContextValue {
   error: Error | null;
   refetch: () => void;
   mutations: GameMutations;
-  accountMutations: AccountMutations;
-  capacityMutations: CapacityMutations;
 }
 
 const GamesContext = createContext<GamesContextValue | null>(null);
@@ -84,6 +65,8 @@ export function GamesProvider({ children }: { children: ReactNode }) {
 
   // Promise-based locks. Returning the in-flight promise means a rapid second
   // click never looks successful; it simply awaits the same request.
+  // Each lock is cleared in a `finally` block inside the same promise so the
+  // cleanup lifecycle is explicit and no detached rejected promise is created.
   const createPromiseRef = useRef<Promise<void> | null>(null);
   const updatePromiseRef = useRef<Promise<void> | null>(null);
   const deletePromiseRef = useRef<Promise<void> | null>(null);
@@ -103,33 +86,32 @@ export function GamesProvider({ children }: { children: ReactNode }) {
       if (createPromiseRef.current) return createPromiseRef.current;
 
       const promise = (async () => {
-        const payload: {
-          title: string;
-          platform: Platform;
-          status: GameStatus;
-          coverUrl?: string;
-        } = {
-          title: data.title.trim(),
-          platform: data.platform,
-          status: data.status,
-        };
-
-        if (data.coverUrl.trim()) {
-          payload.coverUrl = data.coverUrl.trim();
-        }
-
         try {
+          const payload: {
+            title: string;
+            platform: Platform;
+            status: GameStatus;
+            coverUrl?: string;
+          } = {
+            title: data.title.trim(),
+            platform: data.platform,
+            status: data.status,
+          };
+
+          if (data.coverUrl.trim()) {
+            payload.coverUrl = data.coverUrl.trim();
+          }
+
           await createGame.mutateAsync({ data: payload });
           await syncGamesList();
         } catch (err) {
           throw new Error(formatApiError(err));
+        } finally {
+          createPromiseRef.current = null;
         }
       })();
 
       createPromiseRef.current = promise;
-      promise.finally(() => {
-        createPromiseRef.current = null;
-      });
       return promise;
     },
     [createGame, syncGamesList],
@@ -140,25 +122,24 @@ export function GamesProvider({ children }: { children: ReactNode }) {
       if (updatePromiseRef.current) return updatePromiseRef.current;
 
       const promise = (async () => {
-        const payload = {
-          title: data.title.trim(),
-          platform: data.platform,
-          status: data.status,
-          coverUrl: data.coverUrl.trim() ? data.coverUrl.trim() : null,
-        };
-
         try {
+          const payload = {
+            title: data.title.trim(),
+            platform: data.platform,
+            status: data.status,
+            coverUrl: data.coverUrl.trim() ? data.coverUrl.trim() : null,
+          };
+
           await updateGame.mutateAsync({ id, data: payload });
           await syncGamesList();
         } catch (err) {
           throw new Error(formatApiError(err));
+        } finally {
+          updatePromiseRef.current = null;
         }
       })();
 
       updatePromiseRef.current = promise;
-      promise.finally(() => {
-        updatePromiseRef.current = null;
-      });
       return promise;
     },
     [updateGame, syncGamesList],
@@ -172,20 +153,18 @@ export function GamesProvider({ children }: { children: ReactNode }) {
       if (updatePromiseRef.current) return updatePromiseRef.current;
 
       const promise = (async () => {
-        const nextStatus = game.status === "ACTIVE" ? "INACTIVE" : "ACTIVE";
-
         try {
+          const nextStatus = game.status === "ACTIVE" ? "INACTIVE" : "ACTIVE";
           await updateGame.mutateAsync({ id, data: { status: nextStatus } });
           await syncGamesList();
         } catch (err) {
           throw new Error(formatApiError(err));
+        } finally {
+          updatePromiseRef.current = null;
         }
       })();
 
       updatePromiseRef.current = promise;
-      promise.finally(() => {
-        updatePromiseRef.current = null;
-      });
       return promise;
     },
     [games, updateGame, syncGamesList],
@@ -201,27 +180,16 @@ export function GamesProvider({ children }: { children: ReactNode }) {
           await syncGamesList();
         } catch (err) {
           throw new Error(formatApiError(err, { operation: "delete" }));
+        } finally {
+          deletePromiseRef.current = null;
         }
       })();
 
       deletePromiseRef.current = promise;
-      promise.finally(() => {
-        deletePromiseRef.current = null;
-      });
       return promise;
     },
     [deleteGameMutation, syncGamesList],
   );
-
-  // Stage C1: Account/Capacity mutations remain disabled.
-  const addAccount: AccountMutations["addAccount"] = useCallback(() => {}, []);
-  const editAccount: AccountMutations["editAccount"] = useCallback(() => {}, []);
-  const toggleAccountStatus: AccountMutations["toggleAccountStatus"] = useCallback(() => {}, []);
-  const deleteAccount: AccountMutations["deleteAccount"] = useCallback(() => {}, []);
-
-  const addCapacityCustomer: CapacityMutations["addCapacityCustomer"] = useCallback(() => {}, []);
-  const editCapacityCustomer: CapacityMutations["editCapacityCustomer"] = useCallback(() => {}, []);
-  const removeCapacityCustomer: CapacityMutations["removeCapacityCustomer"] = useCallback(() => {}, []);
 
   return (
     <GamesContext.Provider
@@ -232,17 +200,6 @@ export function GamesProvider({ children }: { children: ReactNode }) {
         error,
         refetch,
         mutations: { addGame, editGame, toggleGameStatus, deleteGame },
-        accountMutations: {
-          addAccount,
-          editAccount,
-          toggleAccountStatus,
-          deleteAccount,
-        },
-        capacityMutations: {
-          addCapacityCustomer,
-          editCapacityCustomer,
-          removeCapacityCustomer,
-        },
       }}
     >
       {children}
