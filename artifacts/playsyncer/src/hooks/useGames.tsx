@@ -3,6 +3,7 @@ import {
   useCallback,
   useContext,
   useMemo,
+  useRef,
   type ReactNode,
 } from "react";
 import { useQueryClient } from "@tanstack/react-query";
@@ -80,24 +81,25 @@ export function GamesProvider({ children }: { children: ReactNode }) {
     }));
   }, [data]);
 
-  const createGame = useCreateGame({
-    mutation: {
-      onSuccess: () => {
-        queryClient.invalidateQueries({ queryKey: getListGamesQueryKey() });
-      },
-    },
-  });
+  // Synchronous ref-based locks prevent duplicate submissions even if the UI
+  // disables the button slightly late or rapid events fire across components.
+  const createLockRef = useRef(false);
+  const updateLockRef = useRef(false);
 
-  const updateGame = useUpdateGame({
-    mutation: {
-      onSuccess: () => {
-        queryClient.invalidateQueries({ queryKey: getListGamesQueryKey() });
-      },
-    },
-  });
+  const createGame = useCreateGame();
+  const updateGame = useUpdateGame();
+
+  // Helper: wait for the active Games list query to refetch before resolving.
+  // This ensures the caller can safely close the modal/dialog after synchronization.
+  const syncGamesList = useCallback(async () => {
+    await queryClient.refetchQueries({ queryKey: getListGamesQueryKey(), type: "active" });
+  }, [queryClient]);
 
   const addGame = useCallback(
     async (data: GameFormData) => {
+      if (createLockRef.current) return;
+      createLockRef.current = true;
+
       const payload: {
         title: string;
         platform: Platform;
@@ -115,15 +117,21 @@ export function GamesProvider({ children }: { children: ReactNode }) {
 
       try {
         await createGame.mutateAsync({ data: payload });
+        await syncGamesList();
       } catch (err) {
         throw new Error(formatApiError(err));
+      } finally {
+        createLockRef.current = false;
       }
     },
-    [createGame],
+    [createGame, syncGamesList],
   );
 
   const editGame = useCallback(
     async (id: string, data: GameFormData) => {
+      if (updateLockRef.current) return;
+      updateLockRef.current = true;
+
       const payload = {
         title: data.title.trim(),
         platform: data.platform,
@@ -133,27 +141,35 @@ export function GamesProvider({ children }: { children: ReactNode }) {
 
       try {
         await updateGame.mutateAsync({ id, data: payload });
+        await syncGamesList();
       } catch (err) {
         throw new Error(formatApiError(err));
+      } finally {
+        updateLockRef.current = false;
       }
     },
-    [updateGame],
+    [updateGame, syncGamesList],
   );
 
   const toggleGameStatus = useCallback(
     async (id: string) => {
       const game = games.find((g) => g.id === id);
       if (!game) return;
+      if (updateLockRef.current) return;
+      updateLockRef.current = true;
 
       const nextStatus = game.status === "ACTIVE" ? "INACTIVE" : "ACTIVE";
 
       try {
         await updateGame.mutateAsync({ id, data: { status: nextStatus } });
+        await syncGamesList();
       } catch (err) {
         throw new Error(formatApiError(err));
+      } finally {
+        updateLockRef.current = false;
       }
     },
-    [games, updateGame],
+    [games, updateGame, syncGamesList],
   );
 
   // Stage C1: Delete remains out of scope.

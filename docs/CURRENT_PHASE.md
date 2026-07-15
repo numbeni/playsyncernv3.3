@@ -6,11 +6,13 @@ PS-02B — Games Frontend API Integration and Mock Authority Removal
 
 ## Status
 
-STAGE_C1_READY_FOR_REVIEW
+STAGE_C2A_READY_FOR_REVIEW
 
-Baseline SHA-256: fa294680fa18e84c7522acfbe10e6d257c4df40b1cdeda09e857830acd618a2d
+Stage C1 input baseline SHA-256: fa294680fa18e84c7522acfbe10e6d257c4df40b1cdeda09e857830acd618a2d
+Stage C1 candidate/output SHA-256: f6781255375d694744048b509d7f0b52f1eeb1c9ddc7e6eb0142072cb159b625
+Stage C2A output SHA-256: 089a51d75d7814bdf95d2cdaaf622fdb0af3a8c3128192b3939dd0a3e1ac9a87
 
-Stage C1: Create, Edit and Status API integration for Games. All required mutations are connected and validated.
+Stage C2A: Mutation hardening for Create, Edit and Status. Await synchronization, display errors, prevent duplicate requests.
 
 ## Baseline
 

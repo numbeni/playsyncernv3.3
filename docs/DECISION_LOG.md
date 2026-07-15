@@ -71,3 +71,15 @@ No PlaySyncer product rule was changed by this phase transition.
 - Synthetic Stage C1 test Game: `bea1fcbe-137f-4221-b877-1d71c2a64b88` (title: `PS02B C1 Test Edited 2026-07-15T15:17:31Z`).
 - Validation performed: typecheck, production build, backend tests, API create/edit/status calls, duplicate-title rejection, platform change with zero accounts, and browser console verification.
 - Known limitations: Account Workspace remains pending; Delete is not implemented; SmartSearch only searches games.
+
+## 2026-07-15 — PS-02B Stage C2A
+
+- Stage C1 is accepted with deferred corrections.
+- Stage C2A hardens Create, Edit and Status mutations before Delete integration.
+- Synchronization: every mutation now awaits the API call and then awaits an explicit `queryClient.refetchQueries` of the Games list before resolving.
+- Error display: ConfirmDialog now shows a safe Persian error on failed Status changes; the dialog stays open and the user can retry.
+- Duplicate request prevention: synchronous `useRef` locks guard Create, Edit and Status; UI buttons and Escape/backdrop are disabled while pending.
+- Synthetic Stage C2A test Game: `bea1fcbe-137f-4221-b877-1d71c2a64b88` (current title: `PS02B C2A Test 2026-07-15T15:35:25Z`).
+- Validation performed: typecheck, production build, backend tests, API create/edit/status calls, duplicate-title rejection, and browser console review.
+- No backend route, OpenAPI, generated client, Account/Capacity, `.agents/memory`, or dependency changes.
+- Delete Game and Stage C2B remain out of scope.

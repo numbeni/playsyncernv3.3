@@ -22,6 +22,7 @@ export function ConfirmDialog({
   onCancel,
 }: Props) {
   const [isPending, setIsPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   // Close on Escape
   useEffect(() => {
@@ -42,9 +43,13 @@ export function ConfirmDialog({
     };
   }, [open]);
 
-  // Reset pending state when dialog opens
+  // Reset pending and error state when dialog opens so earlier failures do not leak
+  // into the next interaction.
   useEffect(() => {
-    if (open) setIsPending(false);
+    if (open) {
+      setIsPending(false);
+      setError(null);
+    }
   }, [open]);
 
   if (!open) return null;
@@ -52,10 +57,14 @@ export function ConfirmDialog({
   const handleConfirm = async () => {
     if (isPending) return;
     setIsPending(true);
+    setError(null);
+
     try {
       await onConfirm();
-    } catch {
-      // Errors are handled by the caller; keep the dialog open so the user sees the result
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "عملیات با خطا مواجه شد";
+      setError(message);
+      // Keep the dialog open; unlock so the user can retry.
     } finally {
       setIsPending(false);
     }
@@ -99,6 +108,12 @@ export function ConfirmDialog({
               <p className="mt-1.5 text-sm text-muted-foreground leading-relaxed">{description}</p>
             </div>
           </div>
+
+          {error && (
+            <div className="mt-4 rounded-xl border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
+              {error}
+            </div>
+          )}
 
           <div className="mt-6 flex items-center justify-end gap-2.5">
             <button

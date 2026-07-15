@@ -110,12 +110,12 @@ export function GameFormModal({ open, mode, initial, onSave, onClose }: Props) {
     if (!open) return;
 
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") requestClose();
+      if (e.key === "Escape" && !isSubmitting) requestClose();
     };
 
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
-  }, [open]);
+  }, [open, isSubmitting]);
 
   useEffect(() => {
     if (!open) return;
@@ -154,11 +154,13 @@ export function GameFormModal({ open, mode, initial, onSave, onClose }: Props) {
         platform,
         status,
       });
+      // Keep the submit lock active during the close animation so the user
+      // cannot fire another request while the panel is sliding out.
       requestClose();
     } catch (err) {
       const message = err instanceof Error ? err.message : "عملیات با خطا مواجه شد";
       setSubmitError(message);
-    } finally {
+      // Unlock on failure so the user can retry.
       setIsSubmitting(false);
     }
   };
