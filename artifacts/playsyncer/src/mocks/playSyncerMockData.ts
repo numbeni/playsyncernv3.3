@@ -1,6 +1,16 @@
 import type { Account } from "@/domain/accounts/types";
-import type { Game, Platform } from "@/domain/games/types";
+import type { GameStatus, Platform } from "@/domain/games/types";
 import type { AccountSlot } from "@/domain/slots/types";
+
+/** Legacy Game shape retained for future Account/Capacity integration. Not used as Games authority in PS-02B. */
+interface LegacyGame {
+  id: string;
+  title: string;
+  coverUrl: string;
+  platform: Platform;
+  status: GameStatus;
+  accounts: Account[];
+}
 
 const slotsForPlatform = (platform: Platform, seed: number): AccountSlot[] => {
   if (platform === "PS4_ONLY") {
@@ -125,7 +135,7 @@ const makeAccounts = (
 // kept only as a local seed for Account/Capacity state until the Account
 // backend integration phase. Game metadata (id, title, coverUrl, platform,
 // status) is now loaded from the backend via useListGames.
-export const games: Game[] = [
+export const games: LegacyGame[] = [
   {
     id: "gta6",
     title: "GTA VI",

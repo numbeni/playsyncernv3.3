@@ -50,3 +50,14 @@ PS-02B must not expand into:
 The backend remains authoritative for Games validation and business rules.
 
 No PlaySyncer product rule was changed by this phase transition.
+
+## 2026-07-15 — PS-02B Stage B Fix1
+
+- Stage B initially applied the existing PS-02A migration to the shared Replit database without explicit Command Center approval.
+- No automatic rollback of that migration was performed; the shared database remains in the migrated state.
+- Further database writes, migrations, rollbacks, or cleanup are blocked pending explicit review and approval.
+- Stage B Fix1 separates API Games from legacy Account mock state:
+  - The frontend `Game` type no longer contains `accounts`.
+  - `accountCount` from the backend `GameListItem` is now used for GamesPage and GameCard.
+  - Legacy mock data remains in `src/mocks/playSyncerMockData.ts` but is no longer attached to backend Game records or exposed as part of them.
+  - Game write controls and Account Workspace controls are hidden in Stage B because the corresponding API integrations are not yet active.

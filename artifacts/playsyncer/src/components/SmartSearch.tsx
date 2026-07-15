@@ -1,5 +1,5 @@
 import { useNavigate } from "react-router-dom";
-import { Search, Gamepad2, User2, Hash, X } from "lucide-react";
+import { Search, Gamepad2, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import type { SearchHit } from "@/domain/search/types";
@@ -51,8 +51,6 @@ export function SmartSearch({ onGameFilter, games = [], className }: Props) {
 
   const hits = runSmartSearch(games, q);
   const gameHits = hits.filter((h) => h.kind === "game");
-  const accountHits = hits.filter((h) => h.kind === "account");
-  const customerHits = hits.filter((h) => h.kind === "customer");
 
   const go = (hit: SearchHit) => {
     setOpen(false);
@@ -75,7 +73,7 @@ export function SmartSearch({ onGameFilter, games = [], className }: Props) {
           value={q}
           onChange={(e) => setQ(e.target.value)}
           onFocus={() => setOpen(true)}
-          placeholder="جستجو در بازی‌ها، اکانت‌ها، ایمیل، رمز، شماره مشتری..."
+          placeholder="جستجو در بازی‌ها بر اساس عنوان یا شناسه…"
           className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground/70"
         />
         {q && (
@@ -100,94 +98,29 @@ export function SmartSearch({ onGameFilter, games = [], className }: Props) {
             </div>
           ) : (
             <div className="max-h-96 overflow-y-auto py-1">
-
-              {gameHits.length > 0 && (
-                <>
-                  <div className="px-3 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
-                    بازی‌ها
-                  </div>
-                  {gameHits.map((h, i) => (
-                    <button
-                      key={`game-${i}`}
-                      onClick={() => go(h)}
-                      className="flex w-full items-center gap-3 px-3 py-2.5 text-right hover:bg-accent"
-                    >
-                      <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg gradient-primary text-primary-foreground">
-                        <Gamepad2 className="h-4 w-4" />
-                      </span>
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate text-sm font-medium">{h.label}</span>
-                        <span className="block truncate text-xs text-muted-foreground">
-                          {h.sublabel}
-                        </span>
-                      </span>
-                      <span className="shrink-0 rounded-md bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
-                        بازی
-                      </span>
-                    </button>
-                  ))}
-                </>
-              )}
-
-              {accountHits.length > 0 && (
-                <>
-                  <div className={cn("px-3 pb-1 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground", gameHits.length > 0 ? "mt-1 pt-2 border-t border-border" : "pt-2")}>
-                    اکانت‌ها
-                  </div>
-                  {accountHits.map((h, i) => (
-                    <button
-                      key={`account-${i}`}
-                      onClick={() => go(h)}
-                      className="flex w-full items-center gap-3 px-3 py-2.5 text-right hover:bg-accent"
-                    >
-                      <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-accent text-accent-foreground">
-                        <User2 className="h-4 w-4" />
-                      </span>
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate text-sm font-medium">{h.label}</span>
-                        <span className="block truncate text-xs text-muted-foreground">
-                          {h.sublabel}
-                          {h.matchedBy && (
-                            <span className="mr-1.5 text-warning font-medium">· {h.matchedBy}</span>
-                          )}
-                        </span>
-                      </span>
-                      <span className="shrink-0 rounded-md bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
-                        اکانت
-                      </span>
-                    </button>
-                  ))}
-                </>
-              )}
-
-              {customerHits.length > 0 && (
-                <>
-                  <div className={cn("px-3 pb-1 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground", (gameHits.length > 0 || accountHits.length > 0) ? "mt-1 pt-2 border-t border-border" : "pt-2")}>
-                    مشتریان / ظرفیت
-                  </div>
-                  {customerHits.map((h, i) => (
-                    <button
-                      key={`customer-${i}`}
-                      onClick={() => go(h)}
-                      className="flex w-full items-center gap-3 px-3 py-2.5 text-right hover:bg-accent"
-                    >
-                      <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-accent text-accent-foreground">
-                        <Hash className="h-4 w-4" />
-                      </span>
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate text-sm font-medium">{h.label}</span>
-                        <span className="block truncate text-xs text-muted-foreground">
-                          {h.sublabel}
-                        </span>
-                      </span>
-                      <span className="shrink-0 rounded-md bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
-                        ظرفیت
-                      </span>
-                    </button>
-                  ))}
-                </>
-              )}
-
+              <div className="px-3 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+                بازی‌ها
+              </div>
+              {gameHits.map((h, i) => (
+                <button
+                  key={`game-${i}`}
+                  onClick={() => go(h)}
+                  className="flex w-full items-center gap-3 px-3 py-2.5 text-right hover:bg-accent"
+                >
+                  <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg gradient-primary text-primary-foreground">
+                    <Gamepad2 className="h-4 w-4" />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-sm font-medium">{h.label}</span>
+                    <span className="block truncate text-xs text-muted-foreground">
+                      {h.sublabel}
+                    </span>
+                  </span>
+                  <span className="shrink-0 rounded-md bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+                    بازی
+                  </span>
+                </button>
+              ))}
             </div>
           )}
         </div>

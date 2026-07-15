@@ -1,20 +1,14 @@
 import { Link } from "react-router-dom";
-import { ArrowRight, Gamepad2, Pencil, PowerOff, Trash2 } from "lucide-react";
+import { ArrowRight, Gamepad2 } from "lucide-react";
 import type { Game } from "@/domain/games/types";
 import { platformLabel } from "@/domain/games/platform";
-import { getGameStats } from "@/domain/games/stats";
-import { can } from "@/domain/permissions/permissions";
 import { cn } from "@/lib/utils";
 
 interface Props {
   game: Game;
-  onEdit?: (game: Game) => void;
-  onDisable?: (game: Game) => void;
-  onDelete?: (game: Game) => void;
 }
 
-export function GameCard({ game, onEdit, onDisable, onDelete }: Props) {
-  const stats = getGameStats(game);
+export function GameCard({ game }: Props) {
   const isPs5Only = game.platform === "PS5_ONLY";
   const isActive = game.status === "ACTIVE";
 
@@ -78,12 +72,9 @@ export function GameCard({ game, onEdit, onDisable, onDelete }: Props) {
         <h3 className="truncate text-base font-bold">{game.title}</h3>
       </div>
 
-      {/* Stats row */}
-      <div className="grid grid-cols-4 gap-2 p-4 border-b border-border">
-        <Stat label="اکانت‌ها" value={stats.totalAccounts} />
-        <Stat label="فعال" value={stats.activeAccounts} tone="success" />
-        <Stat label="ظرفیت‌ها" value={stats.totalSlots} />
-        <Stat label="تخصیص" value={stats.totalAssignments} tone="primary" />
+      {/* Stats row — Stage B: only backend accountCount is shown. */}
+      <div className="grid grid-cols-1 gap-2 p-4 border-b border-border">
+        <Stat label="اکانت‌ها" value={game.accountCount} />
       </div>
 
       {/* Footer actions */}
@@ -96,47 +87,6 @@ export function GameCard({ game, onEdit, onDisable, onDelete }: Props) {
           <span>اکانت‌ها</span>
           <ArrowRight className="h-4 w-4 transition-transform group-hover/btn:translate-x-1" />
         </Link>
-
-        {/* Edit */}
-        {can("game.edit") && onEdit && (
-          <button
-            onClick={() => onEdit(game)}
-            title="ویرایش بازی"
-            aria-label="ویرایش بازی"
-            className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-border bg-card text-muted-foreground shadow-soft transition-all hover:border-primary/50 hover:bg-accent hover:text-foreground"
-          >
-            <Pencil className="h-4 w-4" />
-          </button>
-        )}
-
-        {/* Disable / Enable toggle */}
-        {can("game.disable") && onDisable && (
-          <button
-            onClick={() => onDisable(game)}
-            title={isActive ? "غیرفعال‌سازی بازی" : "فعال‌سازی بازی"}
-            aria-label={isActive ? "غیرفعال‌سازی بازی" : "فعال‌سازی بازی"}
-            className={cn(
-              "grid h-10 w-10 shrink-0 place-items-center rounded-xl border shadow-soft transition-all",
-              isActive
-                ? "border-border bg-card text-muted-foreground hover:border-warning/50 hover:bg-warning/10 hover:text-warning"
-                : "border-success/40 bg-success/10 text-success hover:border-success hover:bg-success/20",
-            )}
-          >
-            <PowerOff className="h-4 w-4" />
-          </button>
-        )}
-
-        {/* Delete */}
-        {can("game.delete") && onDelete && (
-          <button
-            onClick={() => onDelete(game)}
-            title="حذف بازی"
-            aria-label="حذف بازی"
-            className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-border bg-card text-muted-foreground shadow-soft transition-all hover:border-destructive/50 hover:bg-destructive/10 hover:text-destructive"
-          >
-            <Trash2 className="h-4 w-4" />
-          </button>
-        )}
       </div>
     </div>
   );

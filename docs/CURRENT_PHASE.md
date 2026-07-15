@@ -6,9 +6,9 @@ PS-02B — Games Frontend API Integration and Mock Authority Removal
 
 ## Status
 
-READY_FOR_STAGE_A_READ_ONLY_AUDIT
+STAGE_B_FIX1_READY_FOR_REVIEW
 
-No source file may be modified until the Stage A frontend integration audit has been reviewed and explicitly approved.
+Stage B Fix1 has been applied. Source files may be reviewed. No further source changes are authorized until this fix is accepted.
 
 ## Baseline
 
